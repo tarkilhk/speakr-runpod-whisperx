@@ -1,4 +1,5 @@
 import asyncio
+import fcntl
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,11 @@ class RunPodManager:
         self.client = RunPodClient(config)
         self._lock = asyncio.Lock()
         self._active_pod_id = config.runpod_pod_id
+        self._deploy_lock_path = Path(
+            f"{config.runpod_active_pod_id_path}.deploy.lock"
+            if config.runpod_active_pod_id_path
+            else "/tmp/speakr-runpod-deploy.lock"
+        )
 
     def configured(self) -> bool:
         has_pod_source = bool(self.load_active_pod_id() or self.config.runpod_template_id)
@@ -49,8 +55,9 @@ class RunPodManager:
                 "and either RUNPOD_POD_ID or RUNPOD_TEMPLATE_ID"
             )
 
+        deadline = asyncio.get_running_loop().time() + self.config.runpod_readiness_timeout_seconds
         async with self._lock:
-            pod_id, pod, just_deployed = await self._get_or_deploy_pod()
+            pod_id, pod, just_deployed = await self._get_or_deploy_pod(deadline)
             mapping = extract_tcp_mapping(pod, self.config.runpod_wrapper_port)
             if mapping:
                 base_url = f"http://{mapping[0]}:{mapping[1]}"
@@ -60,9 +67,9 @@ class RunPodManager:
                     return base_url
                 logger.info("RunPod wrapper not healthy yet; waiting without calling start")
             else:
-                pod_id = await self._handle_pod_without_mapping(pod_id, pod, just_deployed)
+                pod_id = await self._handle_pod_without_mapping(pod_id, pod, just_deployed, deadline)
 
-            return await self._wait_until_ready(pod_id)
+            return await self._wait_until_ready(pod_id, deadline)
 
     async def release_idle_pod(self) -> None:
         pod_id = self.load_active_pod_id()
@@ -82,11 +89,11 @@ class RunPodManager:
         except Exception as exc:
             logger.warning("Failed to %s RunPod pod %s: %s", action, pod_id, exc)
 
-    async def _get_or_deploy_pod(self) -> tuple[str, dict[str, Any], bool]:
+    async def _get_or_deploy_pod(self, deadline: float) -> tuple[str, dict[str, Any], bool]:
         pod_id = self.load_active_pod_id()
         just_deployed = False
         if not pod_id:
-            pod_id = await self._deploy_from_template()
+            pod_id = await self._deploy_from_template_with_retry(deadline)
             just_deployed = True
 
         logger.info("Inspecting RunPod pod %s", pod_id)
@@ -96,17 +103,17 @@ class RunPodManager:
             self._clear_active_pod_id(pod_id)
             if not self.config.template_mode_enabled:
                 raise
-            pod_id = await self._deploy_from_template()
+            pod_id = await self._deploy_from_template_with_retry(deadline)
             just_deployed = True
             pod = await self.client.get_pod(pod_id)
 
         return pod_id, pod, just_deployed
 
-    async def _handle_pod_without_mapping(self, pod_id: str, pod: dict[str, Any], just_deployed: bool) -> str:
+    async def _handle_pod_without_mapping(self, pod_id: str, pod: dict[str, Any], just_deployed: bool, deadline: float) -> str:
         if self.config.template_mode_enabled and not just_deployed and not pod_is_expected_running(pod):
             logger.info("No TCP mapping found for inactive pod %s; replacing it from template", pod_id)
             await self._terminate(pod_id)
-            return await self._deploy_from_template()
+            return await self._deploy_from_template_with_retry(deadline)
         if self.config.template_mode_enabled:
             logger.info("RunPod pod %s has no TCP mapping yet; waiting for assignment", pod_id)
             return pod_id
@@ -115,8 +122,7 @@ class RunPodManager:
         await self.client.start_pod(pod_id)
         return pod_id
 
-    async def _wait_until_ready(self, pod_id: str) -> str:
-        deadline = asyncio.get_running_loop().time() + self.config.runpod_readiness_timeout_seconds
+    async def _wait_until_ready(self, pod_id: str, deadline: float) -> str:
         last_error = "Pod is not ready"
 
         while asyncio.get_running_loop().time() < deadline:
@@ -127,7 +133,7 @@ class RunPodManager:
                 self._clear_active_pod_id(pod_id)
                 if not self.config.template_mode_enabled:
                     raise
-                pod_id = await self._deploy_from_template()
+                pod_id = await self._deploy_from_template_with_retry(deadline)
                 last_error = "Replacement RunPod pod has not reported status yet"
                 continue
 
@@ -146,10 +152,45 @@ class RunPodManager:
 
         raise RunPodTimeoutError(last_error)
 
-    async def _deploy_from_template(self) -> str:
-        pod_id = await self.client.deploy_from_template()
-        self._store_active_pod_id(pod_id)
-        return pod_id
+    async def _deploy_from_template_with_retry(self, deadline: float) -> str:
+        last_error = "RunPod deploy did not complete"
+        while asyncio.get_running_loop().time() < deadline:
+            existing_pod_id = self.load_active_pod_id()
+            if existing_pod_id:
+                logger.info("Using existing RunPod pod ID %s from shared state", existing_pod_id)
+                return existing_pod_id
+
+            lock_file = await asyncio.to_thread(self._acquire_deploy_lock)
+            try:
+                existing_pod_id = self.load_active_pod_id()
+                if existing_pod_id:
+                    logger.info("Detected active RunPod pod %s while waiting for deploy lock", existing_pod_id)
+                    return existing_pod_id
+
+                pod_id = await self.client.deploy_from_template()
+                self._store_active_pod_id(pod_id)
+                return pod_id
+            except (httpx.HTTPError, RunPodTimeoutError, ConfigurationError):
+                raise
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                logger.warning("RunPod deploy attempt failed: %s", exc)
+            finally:
+                await asyncio.to_thread(self._release_deploy_lock, lock_file)
+
+            await asyncio.sleep(self.config.runpod_poll_interval_seconds)
+
+        raise RunPodTimeoutError(f"Timed out while deploying RunPod pod: {last_error}")
+
+    def _acquire_deploy_lock(self) -> Any:
+        self._deploy_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = self._deploy_lock_path.open("a+", encoding="utf-8")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        return lock_file
+
+    def _release_deploy_lock(self, lock_file: Any) -> None:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        lock_file.close()
 
     async def _terminate(self, pod_id: str) -> None:
         try:
