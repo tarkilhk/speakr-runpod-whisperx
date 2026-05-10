@@ -34,7 +34,7 @@ async def health() -> dict:
 
 @app.api_route(
     "/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    methods=["GET", "POST"],
 )
 async def proxy(path: str, request: Request) -> Response:
     if not _authorized(request):
@@ -76,7 +76,7 @@ async def proxy(path: str, request: Request) -> Response:
             key: value
             for key, value in upstream.headers.items()
             if key.lower()
-            not in {"content-encoding", "content-length", "transfer-encoding", "connection"}
+            not in {"content-encoding", "content-length", "transfer-encoding", "connection", "content-type"}
         },
         media_type=upstream.headers.get("content-type"),
     )

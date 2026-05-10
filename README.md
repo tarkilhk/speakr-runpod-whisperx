@@ -96,8 +96,12 @@ RUNPOD_READINESS_TIMEOUT_SECONDS=600
 RUNPOD_REQUEST_TIMEOUT_SECONDS=1800
 RUNPOD_IDLE_STOP_SECONDS=900
 RUNPOD_RETRY_AFTER_SECONDS=300
+MAX_FILE_SIZE_MB=0
 LOG_LEVEL=INFO
 ```
+
+`MAX_FILE_SIZE_MB=0` means unlimited. Set a value (e.g. `1000`) to reject oversized
+uploads before spooling them to disk.
 
 RunPod image:
 
@@ -156,11 +160,23 @@ matches what Speakr expects.
 
 The adapter returns:
 
+- `500 Internal Server Error` if required environment variables are missing
+  (`RUNPOD_API_KEY`, `RUNPOD_POD_ID`, `RUNPOD_WRAPPER_TOKEN`).
 - `503 Service Unavailable` plus `Retry-After` for temporary RunPod capacity,
   startup, or preemption failures.
 - `504 Gateway Timeout` if readiness or transcription exceeds the configured
   timeout.
 - `502 Bad Gateway` if RunPod or WhisperX returns malformed/unexpected data.
+
+## Cost Controls
+
+The adapter stops the RunPod Pod after `RUNPOD_IDLE_STOP_SECONDS` of inactivity.
+This idle-stop is in-memory only: if the adapter container crashes or the Docker
+host reboots while the Pod is running, the Pod will continue billing until stopped
+manually.
+
+An external watchdog that independently polls and stops the Pod is recommended.
+Until that is wired, monitor RunPod billing manually.
 
 ## Security
 

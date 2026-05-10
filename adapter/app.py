@@ -21,6 +21,7 @@ RUNPOD_POLL_INTERVAL_SECONDS = int(os.getenv("RUNPOD_POLL_INTERVAL_SECONDS", "5"
 RUNPOD_REQUEST_TIMEOUT_SECONDS = int(os.getenv("RUNPOD_REQUEST_TIMEOUT_SECONDS", "1800"))
 RUNPOD_IDLE_STOP_SECONDS = int(os.getenv("RUNPOD_IDLE_STOP_SECONDS", "900"))
 RUNPOD_RETRY_AFTER_SECONDS = int(os.getenv("RUNPOD_RETRY_AFTER_SECONDS", "300"))
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "0"))
 
 app = FastAPI(title="Speakr RunPod WhisperX Adapter")
 logging.basicConfig(
@@ -46,9 +47,13 @@ class BadUpstreamResponseError(Exception):
     pass
 
 
+class ConfigurationError(Exception):
+    pass
+
+
 def _api_headers() -> dict[str, str]:
     if not RUNPOD_API_KEY:
-        raise TemporaryRunPodError("RUNPOD_API_KEY is not configured")
+        raise ConfigurationError("RUNPOD_API_KEY is not configured")
     return {"Authorization": f"Bearer {RUNPOD_API_KEY}"}
 
 
@@ -163,7 +168,7 @@ async def _wrapper_healthy(base_url: str) -> bool:
 
 async def _ensure_pod_ready() -> str:
     if not _configured():
-        raise TemporaryRunPodError(
+        raise ConfigurationError(
             "RunPod adapter is not configured; set RUNPOD_API_KEY, RUNPOD_POD_ID, and RUNPOD_WRAPPER_TOKEN"
         )
 
@@ -240,13 +245,24 @@ async def _idle_stop_after_delay() -> None:
 
 
 async def _write_request_body(request: Request) -> Path:
+    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024 if MAX_FILE_SIZE_MB > 0 else 0
     handle = tempfile.NamedTemporaryFile(prefix="speakr-asr-", suffix=".request", delete=False)
     path = Path(handle.name)
+    written = 0
     try:
         async for chunk in request.stream():
+            written += len(chunk)
+            if max_bytes and written > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Request body exceeds {MAX_FILE_SIZE_MB} MB limit",
+                )
             handle.write(chunk)
-    finally:
+    except BaseException:
         handle.close()
+        path.unlink(missing_ok=True)
+        raise
+    handle.close()
     return path
 
 
@@ -287,6 +303,7 @@ async def asr(request: Request) -> Response:
                 "connection",
                 "content-length",
                 "transfer-encoding",
+                "authorization",
             }
         }
         headers["Authorization"] = f"Bearer {RUNPOD_WRAPPER_TOKEN}"
@@ -324,6 +341,8 @@ async def asr(request: Request) -> Response:
             status_code=upstream.status_code,
             media_type=upstream.headers.get("content-type"),
         )
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except RunPodTimeoutError as exc:
         raise HTTPException(status_code=504, detail=str(exc)) from exc
     except (TemporaryRunPodError, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
