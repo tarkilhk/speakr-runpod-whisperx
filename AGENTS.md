@@ -38,7 +38,7 @@ Use examples with obvious placeholders.
 Expected published images:
 
 - `tarkilhk/speakr-runpod-whisperx:latest`
-- `tarkilhk/speaker-adapter:latest`
+- `tarkilhk/speakr-adapter:latest`
 
 Also publish immutable SHA tags from CI for rollback.
 
@@ -58,10 +58,17 @@ Run before finalizing code changes:
 
 ```bash
 python3 -m py_compile adapter/app.py runpod-image/wrapper.py
-docker build -t speaker-adapter:test adapter
-docker build -t speakr-runpod-whisperx:test runpod-image
+docker compose -f docker-compose.mock.yml up -d --build
+bash scripts/smoke_mock_adapter.sh
+docker compose -f docker-compose.mock.yml down
 ```
+
+The smoke test exercises the full adapter lifecycle against the mock: deploy,
+TCP mapping discovery, bearer-auth `/asr` forwarding, and terminate. Run it
+once when a feature or fix is complete — not after every small change.
+
+CI runs the smoke test automatically on every push that touches `adapter/`,
+`scripts/`, or `docker-compose.mock.yml`, and blocks the image build if it fails.
 
 If Docker image builds are too large for the local machine, at minimum run the
 Python compile check and rely on CI for image builds.
-

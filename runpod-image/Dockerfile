@@ -1,6 +1,7 @@
 FROM learnedmachine/whisperx-asr-service:latest
 
 ENV SERVE_MODE=simple
+ENV HOME=/tmp
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends supervisor \
@@ -18,5 +19,7 @@ COPY wrapper.py /opt/whisperx-wrapper/wrapper.py
 COPY supervisord.conf /etc/supervisor/conf.d/whisperx-runpod.conf
 
 EXPOSE 9000
+
+USER 1000:1000
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/whisperx-runpod.conf"]

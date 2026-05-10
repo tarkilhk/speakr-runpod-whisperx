@@ -25,11 +25,10 @@ async def health() -> dict:
         async with httpx.AsyncClient(timeout=10) as client:
             upstream = await client.get(f"{UPSTREAM}/health")
             upstream.raise_for_status()
-            payload = upstream.json()
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"WhisperX not ready: {exc}") from exc
+        raise HTTPException(status_code=503, detail="WhisperX not ready") from exc
 
-    return {"status": "healthy", "upstream": payload}
+    return {"status": "healthy"}
 
 
 @app.api_route(
