@@ -10,6 +10,9 @@ RUN apt-get update \
         httpx==0.28.1 \
         uvicorn[standard]==0.34.0
 
+RUN mkdir -p /opt/whisperx-asr \
+    && cp -a /workspace/app /opt/whisperx-asr/app
+
 WORKDIR /opt/whisperx-wrapper
 COPY wrapper.py /opt/whisperx-wrapper/wrapper.py
 COPY supervisord.conf /etc/supervisor/conf.d/whisperx-runpod.conf
