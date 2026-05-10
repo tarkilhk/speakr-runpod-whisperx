@@ -43,8 +43,6 @@ _active_requests = 0
 
 def _schedule_idle_release() -> None:
     global _idle_stop_task
-    if config.runpod_idle_stop_seconds <= 0:
-        return
     if _idle_stop_task and not _idle_stop_task.done():
         _idle_stop_task.cancel()
     _idle_stop_task = asyncio.create_task(_release_after_idle_delay())
@@ -52,12 +50,13 @@ def _schedule_idle_release() -> None:
 
 async def _release_after_idle_delay() -> None:
     try:
-        await asyncio.sleep(config.runpod_idle_stop_seconds)
+        if config.runpod_idle_stop_seconds > 0:
+            await asyncio.sleep(config.runpod_idle_stop_seconds)
         if _active_requests == 0:
             logger.info(
-                "Idle timer fired after %s seconds; releasing RunPod pod with action=%s",
-                config.runpod_idle_stop_seconds,
+                "Releasing RunPod pod with action=%s (idle_stop_seconds=%s)",
                 config.idle_action,
+                config.runpod_idle_stop_seconds,
             )
             await runpod.release_idle_pod()
     except asyncio.CancelledError:

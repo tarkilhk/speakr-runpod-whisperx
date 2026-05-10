@@ -64,7 +64,7 @@ class AdapterConfig:
             runpod_stuck_init_timeout_seconds=int(os.getenv("RUNPOD_STUCK_INIT_TIMEOUT_SECONDS", "120")),
             runpod_poll_interval_seconds=int(os.getenv("RUNPOD_POLL_INTERVAL_SECONDS", "5")),
             runpod_request_timeout_seconds=int(os.getenv("RUNPOD_REQUEST_TIMEOUT_SECONDS", "1800")),
-            runpod_idle_stop_seconds=int(os.getenv("RUNPOD_IDLE_STOP_SECONDS", "900")),
+            runpod_idle_stop_seconds=int(os.getenv("RUNPOD_IDLE_STOP_SECONDS", "30")),
             runpod_retry_after_seconds=int(os.getenv("RUNPOD_RETRY_AFTER_SECONDS", "300")),
             max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "0")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),

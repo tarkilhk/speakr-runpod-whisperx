@@ -82,7 +82,7 @@ availability. Set it to the same value as the template's container disk.
 | `RUNPOD_NETWORK_VOLUME_ID` | — | Attach an existing persistent volume |
 | `RUNPOD_POD_NAME` | `speakr-whisperx` | Display name in RunPod console |
 | `RUNPOD_IDLE_ACTION` | `terminate` (template mode) / `stop` (pod mode) | What to do after idle timeout |
-| `RUNPOD_IDLE_STOP_SECONDS` | `900` | Idle timeout before releasing the pod |
+| `RUNPOD_IDLE_STOP_SECONDS` | `30` | Seconds to wait after last request before releasing the pod. `0` = release immediately when the last request finishes. |
 | `RUNPOD_RETRY_AFTER_SECONDS` | `300` | `Retry-After` header value sent on 503 |
 | `RUNPOD_WRAPPER_PORT` | `9000` | Port the auth wrapper listens on inside the pod |
 | `RUNPOD_READINESS_TIMEOUT_SECONDS` | `600` | Max wait for pod to become healthy |
