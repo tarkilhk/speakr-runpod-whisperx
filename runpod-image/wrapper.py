@@ -1,4 +1,5 @@
 import hmac
+import logging
 import os
 
 import httpx
@@ -9,6 +10,19 @@ from fastapi.responses import Response
 UPSTREAM = os.getenv("WHISPERX_UPSTREAM_URL", "http://127.0.0.1:9001").rstrip("/")
 ADAPTER_WHISPERX_TOKEN = os.getenv("ADAPTER_WHISPERX_TOKEN", "")
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("WRAPPER_REQUEST_TIMEOUT_SECONDS", "3600"))
+
+
+class _QuietUvicornAccessFilter(logging.Filter):
+    """Swagger UI polls /docs and /openapi.json; omit those from access logs."""
+
+    _SKIP = (' "GET /docs ', ' "GET /openapi.json ', ' "GET /redoc ')
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(fragment in msg for fragment in self._SKIP)
+
+
+logging.getLogger("uvicorn.access").addFilter(_QuietUvicornAccessFilter())
 
 app = FastAPI(title="RunPod WhisperX Auth Wrapper")
 
