@@ -1,5 +1,22 @@
 # Local Development
 
+## Unit Tests
+
+**Install dependencies** (same venv as below):
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install fastapi uvicorn[standard] httpx python-multipart
+```
+
+**Run the suite:**
+
+```bash
+.venv/bin/python -m unittest discover -t . -s tests -v
+```
+
+The suite is self-contained — no running services or credentials required.
+
 ## Testing with the Mock
 
 The mock server (`scripts/mock_runpod_graphql.py`) implements the RunPod

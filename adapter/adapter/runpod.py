@@ -1,7 +1,5 @@
 import asyncio
-import fcntl
 import logging
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -15,7 +13,9 @@ from adapter.pod_mapping import (
     warmup_digest,
     warmup_fingerprint_kv,
 )
+from adapter.pod_state import ActivePodStore, DeployLock
 from adapter.runpod_client import RunPodClient
+from adapter.wrapper_health import wrapper_healthy_detail
 
 logger = logging.getLogger("whisperx-adapter.runpod")
 
@@ -29,12 +29,8 @@ class RunPodManager:
         self.config = config
         self.client = RunPodClient(config)
         self._lock = asyncio.Lock()
-        self._active_pod_id = config.runpod_pod_id
-        self._deploy_lock_path = Path(
-            f"{config.runpod_active_pod_id_path}.deploy.lock"
-            if config.runpod_active_pod_id_path
-            else "/tmp/speakr-runpod-deploy.lock"
-        )
+        self._active_pod_store = ActivePodStore(config.runpod_pod_id, config.runpod_active_pod_id_path)
+        self._deploy_lock = DeployLock(config.runpod_active_pod_id_path)
 
     def configured(self) -> bool:
         has_pod_source = bool(self.load_active_pod_id() or self.config.runpod_template_id)
@@ -49,14 +45,7 @@ class RunPodManager:
         }
 
     def load_active_pod_id(self) -> str:
-        if self._active_pod_id:
-            return self._active_pod_id
-        if not self.config.runpod_active_pod_id_path:
-            return ""
-        try:
-            return Path(self.config.runpod_active_pod_id_path).read_text(encoding="utf-8").strip()
-        except FileNotFoundError:
-            return ""
+        return self._active_pod_store.load()
 
     async def ensure_ready(self) -> str:
         """Return base URL for the authenticated WhisperX wrapper (may poll until timeout)."""
@@ -74,7 +63,7 @@ class RunPodManager:
             if mapping:
                 base_url = f"http://{mapping[0]}:{mapping[1]}"
                 logger.info("RunPod TCP mapping %s pod_id=%s (%s)", base_url, pod_id, warmup_digest(pod))
-                healthy, detail = await self._wrapper_healthy_detail(base_url)
+                healthy, detail = await wrapper_healthy_detail(base_url)
                 if healthy:
                     logger.info("RunPod wrapper already healthy %s pod_id=%s", base_url, pod_id)
                     return base_url
@@ -99,7 +88,7 @@ class RunPodManager:
         if not pod_id:
             logger.info(
                 "Idle release skipped: no active RunPod pod id (memory or %s)",
-                self.config.runpod_active_pod_id_path or "(no path)",
+                self._active_pod_store.path_label,
             )
             return
 
@@ -128,7 +117,7 @@ class RunPodManager:
         try:
             pod = await self.client.get_pod(pod_id)
         except RunPodNotFoundError:
-            self._clear_active_pod_id(pod_id)
+            self._active_pod_store.clear(pod_id)
             if not self.config.template_mode_enabled:
                 raise
             pod_id = await self._deploy_from_template_with_retry(deadline)
@@ -169,7 +158,7 @@ class RunPodManager:
                 pod = await self.client.get_pod(pod_id)
                 last_pod = pod
             except RunPodNotFoundError:
-                self._clear_active_pod_id(pod_id)
+                self._active_pod_store.clear(pod_id)
                 if not self.config.template_mode_enabled:
                     raise
                 pod_id = await self._deploy_from_template_with_retry(deadline)
@@ -260,7 +249,7 @@ class RunPodManager:
                     warmup_digest(pod),
                 )
             logger.debug("Polling wrapper health pod_id=%s url=%s", pod_id, base_url)
-            healthy, detail = await self._wrapper_healthy_detail(base_url)
+            healthy, detail = await wrapper_healthy_detail(base_url)
             if healthy:
                 logger.info("RunPod wrapper healthy %s pod_id=%s", base_url, pod_id)
                 return base_url
@@ -299,23 +288,21 @@ class RunPodManager:
                 logger.info("Using existing RunPod pod ID %s from shared state", existing_pod_id)
                 return existing_pod_id
 
-            lock_file = await asyncio.to_thread(self._acquire_deploy_lock)
             try:
-                existing_pod_id = self.load_active_pod_id()
-                if existing_pod_id:
-                    logger.info("Detected active RunPod pod %s while waiting for deploy lock", existing_pod_id)
-                    return existing_pod_id
+                async with self._deploy_lock():
+                    existing_pod_id = self.load_active_pod_id()
+                    if existing_pod_id:
+                        logger.info("Detected active RunPod pod %s while waiting for deploy lock", existing_pod_id)
+                        return existing_pod_id
 
-                pod_id = await self.client.deploy_from_template()
-                self._store_active_pod_id(pod_id)
-                return pod_id
+                    pod_id = await self.client.deploy_from_template()
+                    self._active_pod_store.store(pod_id)
+                    return pod_id
             except (httpx.HTTPError, RunPodTimeoutError, ConfigurationError):
                 raise
             except Exception as exc:  # noqa: BLE001
                 last_error = str(exc)
                 logger.warning("RunPod deploy attempt failed: %s", exc)
-            finally:
-                await asyncio.to_thread(self._release_deploy_lock, lock_file)
 
             await asyncio.sleep(self.config.runpod_poll_interval_seconds)
 
@@ -327,16 +314,6 @@ class RunPodManager:
         )
         raise RunPodTimeoutError(f"Timed out while deploying RunPod pod: {last_error}")
 
-    def _acquire_deploy_lock(self) -> Any:
-        self._deploy_lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_file = self._deploy_lock_path.open("a+", encoding="utf-8")
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        return lock_file
-
-    def _release_deploy_lock(self, lock_file: Any) -> None:
-        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        lock_file.close()
-
     async def _terminate(self, pod_id: str) -> None:
         try:
             logger.info("Terminating RunPod pod %s", pod_id)
@@ -345,37 +322,4 @@ class RunPodManager:
         except RunPodNotFoundError:
             logger.info("RunPod pod %s was already gone", pod_id)
         finally:
-            self._clear_active_pod_id(pod_id)
-
-    def _store_active_pod_id(self, pod_id: str) -> None:
-        self._active_pod_id = pod_id
-        if not self.config.runpod_active_pod_id_path:
-            return
-        path = Path(self.config.runpod_active_pod_id_path)
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(pod_id, encoding="utf-8")
-        except OSError as exc:
-            logger.warning("Failed to write active RunPod pod ID to %s: %s", path, exc)
-
-    def _clear_active_pod_id(self, pod_id: str | None = None) -> None:
-        if pod_id and self._active_pod_id and pod_id != self._active_pod_id:
-            return
-        self._active_pod_id = ""
-        if not self.config.runpod_active_pod_id_path:
-            return
-        try:
-            Path(self.config.runpod_active_pod_id_path).unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning("Failed to remove active RunPod pod ID file: %s", exc)
-
-    async def _wrapper_healthy_detail(self, base_url: str) -> tuple[bool, str]:
-        """Return (healthy, detail) where detail is safe for logs (status code or error kind)."""
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(f"{base_url}/health")
-            if response.status_code == 200:
-                return True, "status=200"
-            return False, f"http_status={response.status_code}"
-        except httpx.HTTPError as exc:
-            return False, f"{type(exc).__name__}: {exc}"
+            self._active_pod_store.clear(pod_id)

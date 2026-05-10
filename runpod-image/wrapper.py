@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
 from speakr_common.http_client_logging import configure_http_client_log_redaction
+from speakr_common.proxy_headers import forwarded_request_headers, forwarded_response_headers
 from speakr_common.uvicorn_access import QuietUvicornAccessFilter
 
 
@@ -48,18 +49,7 @@ async def proxy(path: str, request: Request) -> Response:
     if not _authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower()
-        not in {
-            "authorization",
-            "host",
-            "connection",
-            "content-length",
-            "transfer-encoding",
-        }
-    }
+    headers = forwarded_request_headers(request.headers)
     timeout = httpx.Timeout(
         REQUEST_TIMEOUT_SECONDS,
         connect=60,
@@ -80,11 +70,6 @@ async def proxy(path: str, request: Request) -> Response:
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
-        headers={
-            key: value
-            for key, value in upstream.headers.items()
-            if key.lower()
-            not in {"content-encoding", "content-length", "transfer-encoding", "connection", "content-type"}
-        },
+        headers=forwarded_response_headers(upstream.headers),
         media_type=upstream.headers.get("content-type"),
     )

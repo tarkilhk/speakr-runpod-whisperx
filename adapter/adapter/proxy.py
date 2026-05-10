@@ -8,6 +8,7 @@ from fastapi.responses import Response
 
 from adapter.config import AdapterConfig
 from adapter.errors import BadUpstreamResponseError, TemporaryRunPodError
+from speakr_common.proxy_headers import forwarded_request_headers
 
 
 async def spool_request_body(request: Request, max_file_size_mb: int) -> Path:
@@ -33,7 +34,7 @@ async def spool_request_body(request: Request, max_file_size_mb: int) -> Path:
 
 
 async def forward_asr(base_url: str, request: Request, body_path: Path, config: AdapterConfig) -> Response:
-    headers = _forward_headers(request, config.adapter_whisperx_token)
+    headers = forwarded_request_headers(request.headers, authorization_token=config.adapter_whisperx_token)
     timeout = httpx.Timeout(
         config.runpod_request_timeout_seconds,
         connect=60,
@@ -50,23 +51,6 @@ async def forward_asr(base_url: str, request: Request, body_path: Path, config: 
         )
 
     return _response_from_upstream(upstream)
-
-
-def _forward_headers(request: Request, token: str) -> dict[str, str]:
-    headers = {
-        key: value
-        for key, value in request.headers.items()
-        if key.lower()
-        not in {
-            "host",
-            "connection",
-            "content-length",
-            "transfer-encoding",
-            "authorization",
-        }
-    }
-    headers["Authorization"] = f"Bearer {token}"
-    return headers
 
 
 async def _file_chunks(path: Path) -> AsyncIterator[bytes]:
