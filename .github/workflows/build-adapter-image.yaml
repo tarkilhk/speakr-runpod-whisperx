@@ -1,5 +1,5 @@
 ---
-name: Build Docker images
+name: Build adapter image
 
 "on":
   push:
@@ -7,22 +7,18 @@ name: Build Docker images
       - main
     paths:
       - 'adapter/**'
-      - 'runpod-image/**'
-      - '.github/workflows/build-images.yaml'
-  schedule:
-    - cron: '23 3 * * 1'
+      - '.github/workflows/build-adapter-image.yaml'
   workflow_dispatch:
 
 concurrency:
-  group: build-whisperx-images
+  group: build-speaker-adapter-image
   cancel-in-progress: true
 
 env:
-  ADAPTER_IMAGE: tarkilhk/speakr-whisperx-adapter
-  RUNPOD_IMAGE: tarkilhk/speakr-whisperx-runpod
+  ADAPTER_IMAGE: tarkilhk/speaker-adapter
 
 jobs:
-  build-images:
+  build-adapter-image:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -56,13 +52,3 @@ jobs:
           tags: |
             ${{ env.ADAPTER_IMAGE }}:latest
             ${{ env.ADAPTER_IMAGE }}:sha-${{ steps.image.outputs.short_sha }}
-
-      - name: Build and push RunPod image
-        uses: docker/build-push-action@v6
-        with:
-          context: runpod-image
-          pull: true
-          push: true
-          tags: |
-            ${{ env.RUNPOD_IMAGE }}:latest
-            ${{ env.RUNPOD_IMAGE }}:sha-${{ steps.image.outputs.short_sha }}

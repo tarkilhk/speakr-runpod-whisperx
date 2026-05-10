@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, Response
 RUNPOD_API_BASE = os.getenv("RUNPOD_API_BASE", "https://rest.runpod.io/v1").rstrip("/")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY", "")
 RUNPOD_POD_ID = os.getenv("RUNPOD_POD_ID", "")
-RUNPOD_WRAPPER_TOKEN = os.getenv("RUNPOD_WRAPPER_TOKEN", "")
+ADAPTER_WHISPERX_TOKEN = os.getenv("ADAPTER_WHISPERX_TOKEN", "")
 RUNPOD_WRAPPER_PORT = int(os.getenv("RUNPOD_WRAPPER_PORT", "9000"))
 RUNPOD_READINESS_TIMEOUT_SECONDS = int(os.getenv("RUNPOD_READINESS_TIMEOUT_SECONDS", "600"))
 RUNPOD_POLL_INTERVAL_SECONDS = int(os.getenv("RUNPOD_POLL_INTERVAL_SECONDS", "5"))
@@ -58,7 +58,7 @@ def _api_headers() -> dict[str, str]:
 
 
 def _configured() -> bool:
-    return bool(RUNPOD_API_KEY and RUNPOD_POD_ID and RUNPOD_WRAPPER_TOKEN)
+    return bool(RUNPOD_API_KEY and RUNPOD_POD_ID and ADAPTER_WHISPERX_TOKEN)
 
 
 async def _runpod_request(method: str, path: str) -> dict[str, Any]:
@@ -169,7 +169,7 @@ async def _wrapper_healthy(base_url: str) -> bool:
 async def _ensure_pod_ready() -> str:
     if not _configured():
         raise ConfigurationError(
-            "RunPod adapter is not configured; set RUNPOD_API_KEY, RUNPOD_POD_ID, and RUNPOD_WRAPPER_TOKEN"
+            "RunPod adapter is not configured; set RUNPOD_API_KEY, RUNPOD_POD_ID, and ADAPTER_WHISPERX_TOKEN"
         )
 
     async with _pod_lock:
@@ -306,7 +306,7 @@ async def asr(request: Request) -> Response:
                 "authorization",
             }
         }
-        headers["Authorization"] = f"Bearer {RUNPOD_WRAPPER_TOKEN}"
+        headers["Authorization"] = f"Bearer {ADAPTER_WHISPERX_TOKEN}"
         timeout = httpx.Timeout(
             RUNPOD_REQUEST_TIMEOUT_SECONDS,
             connect=60,

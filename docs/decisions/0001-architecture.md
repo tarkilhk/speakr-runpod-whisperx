@@ -76,7 +76,7 @@ found the IP and port could consume the GPU.
 The wrapper:
 
 - listens on public port `9000`
-- checks `Authorization: Bearer <RUNPOD_WRAPPER_TOKEN>`
+- checks `Authorization: Bearer <ADAPTER_WHISPERX_TOKEN>`
 - forwards valid requests to `127.0.0.1:9001`
 - returns `401` for invalid requests
 

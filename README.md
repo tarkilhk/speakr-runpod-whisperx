@@ -27,8 +27,8 @@ This repo builds two images:
 
 | Image | Purpose |
 | --- | --- |
-| `tarkilhk/speakr-whisperx-adapter` | Local Speakr-side adapter. |
-| `tarkilhk/speakr-whisperx-runpod` | RunPod GPU-side WhisperX image with auth wrapper. |
+| `tarkilhk/speaker-adapter` | Local Speakr-side adapter. |
+| `tarkilhk/speakr-runpod-whisperx` | RunPod GPU-side WhisperX image with auth wrapper. |
 
 Both images should be published as:
 
@@ -37,6 +37,22 @@ Both images should be published as:
 
 Use `latest` for low-maintenance testing. Use a `sha-*` tag for stable
 deployments and rollback.
+
+## Publishing Images
+
+This repo uses two separate workflows: one for `adapter/` and one for
+`runpod-image/`. The adapter workflow runs when adapter files change. The
+RunPod workflow runs when RunPod image files change and also on the weekly
+schedule so upstream `latest` can be refreshed.
+
+The GitHub Actions workflows expect this repository secret:
+
+```env
+DOCKERHUB_TOKEN=your-dockerhub-access-token
+```
+
+The Docker Hub username is configured in each workflow; the token is the only
+secret needed for publishing.
 
 ## RunPod Image
 
@@ -56,7 +72,7 @@ It runs two processes under `supervisord`:
 Only port `9000/tcp` should be exposed from RunPod. The wrapper requires:
 
 ```http
-Authorization: Bearer <RUNPOD_WRAPPER_TOKEN>
+Authorization: Bearer <ADAPTER_WHISPERX_TOKEN>
 ```
 
 Unauthenticated requests receive `401`.
@@ -79,7 +95,7 @@ It:
 - starts the configured RunPod Pod if needed
 - discovers `publicIp` and `portMappings["9000"]`
 - waits for the RunPod wrapper `/health`
-- forwards `/asr` with `RUNPOD_WRAPPER_TOKEN`
+- forwards `/asr` with `ADAPTER_WHISPERX_TOKEN`
 - returns the WhisperX JSON response to Speakr
 - stops the Pod after an idle timeout
 
@@ -88,9 +104,9 @@ It:
 Adapter:
 
 ```env
-RUNPOD_API_KEY=...
-RUNPOD_POD_ID=...
-RUNPOD_WRAPPER_TOKEN=...
+RUNPOD_API_KEY=your-runpod-api-key
+RUNPOD_POD_ID=your-runpod-pod-id
+ADAPTER_WHISPERX_TOKEN=replace-with-shared-secret
 RUNPOD_WRAPPER_PORT=9000
 RUNPOD_READINESS_TIMEOUT_SECONDS=600
 RUNPOD_REQUEST_TIMEOUT_SECONDS=1800
@@ -106,8 +122,8 @@ uploads before spooling them to disk.
 RunPod image:
 
 ```env
-HF_TOKEN=...
-RUNPOD_WRAPPER_TOKEN=...
+HF_TOKEN=your-huggingface-token
+ADAPTER_WHISPERX_TOKEN=replace-with-shared-secret
 DEVICE=cuda
 COMPUTE_TYPE=float16
 BATCH_SIZE=16
@@ -132,7 +148,6 @@ Add a small volume later if model downloads repeat too often.
 The `HF_TOKEN` account must accept the model terms required by upstream
 `learnedmachine/whisperx-asr-service`:
 
-- `pyannote/speaker-diarization-community-1`
 - `pyannote/segmentation-3.0`
 - `pyannote/speaker-diarization-3.1`
 
@@ -161,7 +176,7 @@ matches what Speakr expects.
 The adapter returns:
 
 - `500 Internal Server Error` if required environment variables are missing
-  (`RUNPOD_API_KEY`, `RUNPOD_POD_ID`, `RUNPOD_WRAPPER_TOKEN`).
+  (`RUNPOD_API_KEY`, `RUNPOD_POD_ID`, `ADAPTER_WHISPERX_TOKEN`).
 - `503 Service Unavailable` plus `Retry-After` for temporary RunPod capacity,
   startup, or preemption failures.
 - `504 Gateway Timeout` if readiness or transcription exceeds the configured
@@ -183,13 +198,13 @@ Until that is wired, monitor RunPod billing manually.
 RunPod TCP mapping is internet-facing. Do not expose WhisperX directly.
 
 The RunPod image exposes only the auth wrapper. The wrapper checks
-`RUNPOD_WRAPPER_TOKEN` and forwards valid requests to local WhisperX.
+`ADAPTER_WHISPERX_TOKEN` and forwards valid requests to local WhisperX.
 
 ## Local Build
 
 ```bash
-docker build -t speakr-whisperx-adapter:test adapter
-docker build -t speakr-whisperx-runpod:test runpod-image
+docker build -t speaker-adapter:test adapter
+docker build -t speakr-runpod-whisperx:test runpod-image
 ```
 
 The RunPod image is large because it inherits CUDA/PyTorch/WhisperX. Local

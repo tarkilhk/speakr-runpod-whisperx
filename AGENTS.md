@@ -27,7 +27,7 @@ assumptions.
 Never commit real values for:
 
 - `RUNPOD_API_KEY`
-- `RUNPOD_WRAPPER_TOKEN`
+- `ADAPTER_WHISPERX_TOKEN`
 - `HF_TOKEN`
 - any Speakr, Docker Hub, or homelab secrets
 
@@ -37,8 +37,8 @@ Use examples with obvious placeholders.
 
 Expected published images:
 
-- `tarkilhk/speakr-whisperx-runpod:latest`
-- `tarkilhk/speakr-whisperx-adapter:latest`
+- `tarkilhk/speakr-runpod-whisperx:latest`
+- `tarkilhk/speaker-adapter:latest`
 
 Also publish immutable SHA tags from CI for rollback.
 
@@ -58,8 +58,8 @@ Run before finalizing code changes:
 
 ```bash
 python3 -m py_compile adapter/app.py runpod-image/wrapper.py
-docker build -t speakr-whisperx-adapter:test adapter
-docker build -t speakr-whisperx-runpod:test runpod-image
+docker build -t speaker-adapter:test adapter
+docker build -t speakr-runpod-whisperx:test runpod-image
 ```
 
 If Docker image builds are too large for the local machine, at minimum run the

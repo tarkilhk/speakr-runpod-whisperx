@@ -7,16 +7,16 @@ from fastapi.responses import Response
 
 
 UPSTREAM = os.getenv("WHISPERX_UPSTREAM_URL", "http://127.0.0.1:9001").rstrip("/")
-WRAPPER_TOKEN = os.getenv("RUNPOD_WRAPPER_TOKEN", "")
+ADAPTER_WHISPERX_TOKEN = os.getenv("ADAPTER_WHISPERX_TOKEN", "")
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("WRAPPER_REQUEST_TIMEOUT_SECONDS", "3600"))
 
 app = FastAPI(title="RunPod WhisperX Auth Wrapper")
 
 
 def _authorized(request: Request) -> bool:
-    expected = f"Bearer {WRAPPER_TOKEN}"
+    expected = f"Bearer {ADAPTER_WHISPERX_TOKEN}"
     provided = request.headers.get("authorization", "")
-    return bool(WRAPPER_TOKEN) and hmac.compare_digest(provided, expected)
+    return bool(ADAPTER_WHISPERX_TOKEN) and hmac.compare_digest(provided, expected)
 
 
 @app.get("/health")
