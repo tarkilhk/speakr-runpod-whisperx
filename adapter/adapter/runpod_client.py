@@ -9,12 +9,28 @@ from adapter.pod_mapping import extract_created_pod_id
 
 logger = logging.getLogger("whisperx-adapter.runpod_client")
 
+# Pod poll: lifecycle + warmup hints beyond runtime/ports. RunPod does not expose docker pull
+# progress in GraphQL; extra fields feed startup_progress_fingerprint() so we do not treat
+# long pulls as "stuck" while desiredStatus/dockerId/telemetry/etc. are still moving.
+# See docs/runpod-graphql-api.md ("Warmup vs docker pull").
 POD_FIELDS = """
 id
 name
 desiredStatus
+dockerId
+lastStatusChange
+lastStartedAt
+version
+uptimeSeconds
 imageName
 machineId
+machine {
+  podHostId
+}
+latestTelemetry {
+  state
+  time
+}
 runtime {
   uptimeInSeconds
   ports {
@@ -109,9 +125,16 @@ class RunPodClient:
             body["networkVolumeId"] = self.config.runpod_network_volume_id
 
         logger.info(
-            "Deploying new RunPod pod from template %s with GPU candidates: %s",
+            "Deploying RunPod from template_id=%s gpu_type_ids=%s gpu_count=%s cloud_type=%s "
+            "support_public_ip=%s container_disk_gb=%s network_volume_id=%s pod_name=%s",
             self.config.runpod_template_id,
-            ", ".join(self.config.runpod_gpu_type_ids),
+            ",".join(self.config.runpod_gpu_type_ids),
+            self.config.runpod_gpu_count,
+            self.config.runpod_cloud_type,
+            self.config.runpod_support_public_ip,
+            self.config.runpod_container_disk_gb or "(omit)",
+            self.config.runpod_network_volume_id or "(none)",
+            self.config.runpod_pod_name,
         )
         payload = await self._graphql(DEPLOY_POD_MUTATION, {"input": body}, "podFindAndDeployOnDemand")
         pod_id = extract_created_pod_id(payload)
@@ -122,6 +145,7 @@ class RunPodClient:
         self._require_api_key()
         timeout = httpx.Timeout(60, connect=30)
         async with httpx.AsyncClient(timeout=timeout) as client:
+            # Bearer keeps the key out of the URL (httpx logs URLs at INFO if enabled).
             response = await client.post(
                 self.config.runpod_graphql_url,
                 headers={

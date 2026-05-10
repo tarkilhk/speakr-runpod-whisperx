@@ -86,7 +86,7 @@ availability. Set it to the same value as the template's container disk.
 | `RUNPOD_RETRY_AFTER_SECONDS` | `300` | `Retry-After` header value sent on 503 |
 | `RUNPOD_WRAPPER_PORT` | `9000` | Port the auth wrapper listens on inside the pod |
 | `RUNPOD_READINESS_TIMEOUT_SECONDS` | `600` | Max wait for pod to become healthy |
-| `RUNPOD_STUCK_INIT_TIMEOUT_SECONDS` | `120` | If a machine is assigned but the container hasn't started within this many seconds, terminate and redeploy. Set to `0` to disable. |
+| `RUNPOD_STUCK_INIT_TIMEOUT_SECONDS` | `120` | If a machine is assigned but **GraphQL warmup signals stay unchanged** for this many seconds (see adapter stuck-init logic), terminate and redeploy. Progress (`dockerId`, `lastStatusChange`, `desiredStatus`, `version`, `latestTelemetry.state`, or `runtime`) resets the timer — large image pulls can legitimately take minutes. Set to `0` to disable. |
 | `RUNPOD_REQUEST_TIMEOUT_SECONDS` | `1800` | Max time for a single transcription request |
 | `ADAPTER_WHISPERX_TOKEN` | — | Bearer token; must match the RunPod secret |
 | `MAX_FILE_SIZE_MB` | `0` (unlimited) | Reject uploads larger than this before spooling |

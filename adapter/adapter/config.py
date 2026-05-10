@@ -48,6 +48,7 @@ class AdapterConfig:
             runpod_template_id=os.getenv("RUNPOD_TEMPLATE_ID", ""),
             runpod_gpu_type_ids=_env_csv("RUNPOD_GPU_TYPE_IDS"),
             runpod_gpu_count=int(os.getenv("RUNPOD_GPU_COUNT", "1")),
+            # 0 = omit from deploy mutation (RunPod does not inherit template disk via API).
             runpod_container_disk_gb=int(os.getenv("RUNPOD_CONTAINER_DISK_GB", "0")),
             runpod_pod_name=os.getenv("RUNPOD_POD_NAME", "speakr-whisperx"),
             runpod_network_volume_id=os.getenv("RUNPOD_NETWORK_VOLUME_ID", ""),
@@ -61,9 +62,12 @@ class AdapterConfig:
             adapter_whisperx_token=os.getenv("ADAPTER_WHISPERX_TOKEN", ""),
             runpod_wrapper_port=int(os.getenv("RUNPOD_WRAPPER_PORT", "9000")),
             runpod_readiness_timeout_seconds=int(os.getenv("RUNPOD_READINESS_TIMEOUT_SECONDS", "600")),
+            # Stuck warmup: max seconds with machine assigned but unchanged warmup fingerprint
+            # (see startup_progress_fingerprint); 0 disables terminate-and-redeploy on stall.
             runpod_stuck_init_timeout_seconds=int(os.getenv("RUNPOD_STUCK_INIT_TIMEOUT_SECONDS", "120")),
             runpod_poll_interval_seconds=int(os.getenv("RUNPOD_POLL_INTERVAL_SECONDS", "5")),
             runpod_request_timeout_seconds=int(os.getenv("RUNPOD_REQUEST_TIMEOUT_SECONDS", "1800")),
+            # Quiet period after last /asr completes before idle terminate/stop (see app.py).
             runpod_idle_stop_seconds=int(os.getenv("RUNPOD_IDLE_STOP_SECONDS", "30")),
             runpod_retry_after_seconds=int(os.getenv("RUNPOD_RETRY_AFTER_SECONDS", "300")),
             max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "0")),

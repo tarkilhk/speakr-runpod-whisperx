@@ -20,6 +20,75 @@ def extract_tcp_mapping(pod: dict[str, Any], wrapper_port: int) -> tuple[str, in
     return None
 
 
+def startup_progress_fingerprint(pod: dict[str, Any]) -> tuple[Any, ...]:
+    """Signals RunPod may update while a pod is still warming up (before runtime/ports exist).
+
+    RunPod GraphQL does **not** expose Docker layer/pull progress. We use coarse lifecycle
+    fields from the schema (`dockerId`, `lastStartedAt`, `machine.podHostId`, telemetry,
+    etc.). Any change resets the stuck-init countdown.
+
+    See docs/runpod-graphql-api.md ("Warmup vs docker pull").
+    """
+    telemetry = pod.get("latestTelemetry")
+    tel_state = None
+    if isinstance(telemetry, dict):
+        tel_state = telemetry.get("state")
+    machine = pod.get("machine")
+    pod_host_id = machine.get("podHostId") if isinstance(machine, dict) else None
+    # Tuple order is arbitrary but must stay stable (compared across polls).
+    return (
+        pod.get("desiredStatus"),
+        pod.get("dockerId"),
+        pod.get("lastStatusChange"),
+        pod.get("lastStartedAt"),
+        pod.get("uptimeSeconds"),
+        pod.get("version"),
+        tel_state,
+        pod_host_id,
+        pod.get("runtime") is not None,
+    )
+
+
+def warmup_fingerprint_kv(fp: tuple[Any, ...]) -> str:
+    """Compact key=value line for logs when fingerprint tuple appears frozen or changed."""
+    if len(fp) < 9:
+        return f"fingerprint_partial={fp!r}"
+    docker_raw = fp[1]
+    docker = "set" if docker_raw else "none"
+    return (
+        f"desiredStatus={fp[0]!r} dockerId={docker} lastStatusChange={fp[2]!r} "
+        f"lastStartedAt={fp[3]!r} uptimeSeconds={fp[4]!r} version={fp[5]!r} "
+        f"telemetry.state={fp[6]!r} podHostId={fp[7]!r} has_runtime={fp[8]!r}"
+    )
+
+
+def warmup_status_kv(pod: dict[str, Any], *, wrapper_port: int | None = None) -> str:
+    """Single-line lifecycle snapshot for INFO logs (no secrets)."""
+    telemetry = pod.get("latestTelemetry")
+    tel_state = telemetry.get("state") if isinstance(telemetry, dict) else None
+    tel_time = telemetry.get("time") if isinstance(telemetry, dict) else None
+    machine = pod.get("machine")
+    pod_host_id = machine.get("podHostId") if isinstance(machine, dict) else None
+    docker = "set" if pod.get("dockerId") else "none"
+    parts = [
+        f"desiredStatus={pod.get('desiredStatus')!r}",
+        f"machineId={pod.get('machineId')!r}",
+        f"dockerId={docker}",
+        f"lastStatusChange={pod.get('lastStatusChange')!r}",
+        f"lastStartedAt={pod.get('lastStartedAt')!r}",
+        f"uptimeSeconds={pod.get('uptimeSeconds')!r}",
+        f"version={pod.get('version')!r}",
+        f"telemetry.state={tel_state!r}",
+        f"telemetry.time={tel_time!r}",
+        f"podHostId={pod_host_id!r}",
+        f"has_runtime={pod.get('runtime') is not None}",
+        f"imageName={pod.get('imageName')!r}",
+    ]
+    if wrapper_port is not None:
+        parts.append(f"wrapper_port={wrapper_port}")
+    return " ".join(parts)
+
+
 def pod_is_expected_running(pod: dict[str, Any]) -> bool:
     for item in walk_dicts(pod):
         for key in ("desiredStatus", "desired_status", "status"):

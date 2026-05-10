@@ -28,14 +28,48 @@ mutation DeployPod($input: PodFindAndDeployOnDemandInput) {
 }
 ```
 
+### Warmup vs docker pull
+
+RunPod’s public GraphQL **`Pod`** type has **no** field for Docker pull layer progress,
+pull percentage, or a dedicated “image pulling” phase. Official pod examples emphasize
+**`desiredStatus`**, **`machine` / `machineId`**, and **`runtime`** (with ports) as the
+observable lifecycle ([manage pods](https://docs.runpod.io/sdks/graphql/manage-pods),
+[schema **Pod**](https://graphql-spec.dev.runpod.io/)).
+
+Practical signals that the workload is **past pure scheduling** (often still **before**
+**`runtime`** is populated) include:
+
+- **`dockerId`** — Docker container id once the engine has created the container record.
+- **`lastStartedAt`** — timestamp RunPod associates with the container start lifecycle.
+- Top-level **`uptimeSeconds`** — deprecated in docs in favour of **`runtime.uptimeInSeconds`**,
+  but may appear earlier than a full **`runtime`** block in some responses.
+- **`machine { podHostId }`** — host binding shown in RunPod’s own deploy examples.
+- **`latestTelemetry.state`** — opaque string; usefulness depends on RunPod populating it during warmup.
+
+The adapter treats **`runtime`** (especially **public TCP ports**) as **fully ready** for
+the WhisperX wrapper. Until then, it combines the fields above into a **warmup fingerprint**;
+any change resets the stuck-init redeploy timer (see adapter code).
+
 ```graphql
 query Pod($input: PodFilter) {
   pod(input: $input) {
     id
     name
     desiredStatus
+    dockerId
+    lastStatusChange
+    lastStartedAt
+    version
+    uptimeSeconds
     imageName
     machineId
+    machine {
+      podHostId
+    }
+    latestTelemetry {
+      state
+      time
+    }
     runtime {
       uptimeInSeconds
       ports {
