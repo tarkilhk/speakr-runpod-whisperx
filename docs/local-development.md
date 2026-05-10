@@ -45,6 +45,18 @@ bash scripts/smoke_mock_adapter.sh
 This exercises: `podFindAndDeployOnDemand`, `pod` runtime port discovery,
 bearer-auth `/asr` forwarding, and `podTerminate`.
 
+**Test stuck-init detection** (set `MOCK_STUCK_INIT_PODS=1` on the mock so the
+first deployed pod is permanently stuck with `machineId` set but no `runtime`,
+then watch the adapter terminate and redeploy after `RUNPOD_STUCK_INIT_TIMEOUT_SECONDS`):
+
+```bash
+ADAPTER_WHISPERX_TOKEN=test-token \
+MOCK_RUNPOD_PUBLIC_IP=127.0.0.1 \
+MOCK_RUNPOD_PUBLIC_PORT=19001 \
+MOCK_STUCK_INIT_PODS=1 \
+.venv/bin/uvicorn scripts.mock_runpod_graphql:app --port 19001
+```
+
 ## Building Images Locally
 
 ```bash

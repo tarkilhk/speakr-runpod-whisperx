@@ -28,6 +28,7 @@ class AdapterConfig:
     adapter_whisperx_token: str
     runpod_wrapper_port: int
     runpod_readiness_timeout_seconds: int
+    runpod_stuck_init_timeout_seconds: int
     runpod_poll_interval_seconds: int
     runpod_request_timeout_seconds: int
     runpod_idle_stop_seconds: int
@@ -60,6 +61,7 @@ class AdapterConfig:
             adapter_whisperx_token=os.getenv("ADAPTER_WHISPERX_TOKEN", ""),
             runpod_wrapper_port=int(os.getenv("RUNPOD_WRAPPER_PORT", "9000")),
             runpod_readiness_timeout_seconds=int(os.getenv("RUNPOD_READINESS_TIMEOUT_SECONDS", "600")),
+            runpod_stuck_init_timeout_seconds=int(os.getenv("RUNPOD_STUCK_INIT_TIMEOUT_SECONDS", "120")),
             runpod_poll_interval_seconds=int(os.getenv("RUNPOD_POLL_INTERVAL_SECONDS", "5")),
             runpod_request_timeout_seconds=int(os.getenv("RUNPOD_REQUEST_TIMEOUT_SECONDS", "1800")),
             runpod_idle_stop_seconds=int(os.getenv("RUNPOD_IDLE_STOP_SECONDS", "900")),

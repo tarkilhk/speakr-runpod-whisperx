@@ -124,6 +124,7 @@ class RunPodManager:
 
     async def _wait_until_ready(self, pod_id: str, deadline: float) -> str:
         last_error = "Pod is not ready"
+        stuck_init_since: float | None = None
 
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(self.config.runpod_poll_interval_seconds)
@@ -134,8 +135,43 @@ class RunPodManager:
                 if not self.config.template_mode_enabled:
                     raise
                 pod_id = await self._deploy_from_template_with_retry(deadline)
+                stuck_init_since = None
                 last_error = "Replacement RunPod pod has not reported status yet"
                 continue
+
+            now = asyncio.get_running_loop().time()
+
+            # Detect when a machine is assigned but the container hasn't started pulling yet.
+            # This happens when RunPod places the pod on a machine but the host is slow to
+            # initialise. If it persists past the threshold, terminate and try a fresh deploy.
+            if (
+                self.config.template_mode_enabled
+                and self.config.runpod_stuck_init_timeout_seconds > 0
+                and pod.get("machineId")
+                and not pod.get("runtime")
+            ):
+                if stuck_init_since is None:
+                    stuck_init_since = now
+                    logger.info(
+                        "RunPod pod %s: machine %s assigned but container not yet starting",
+                        pod_id,
+                        pod["machineId"],
+                    )
+                elif now - stuck_init_since > self.config.runpod_stuck_init_timeout_seconds:
+                    logger.warning(
+                        "Pod %s stuck in pre-pull initialization for %.0fs (threshold %ss); "
+                        "terminating and redeploying",
+                        pod_id,
+                        now - stuck_init_since,
+                        self.config.runpod_stuck_init_timeout_seconds,
+                    )
+                    await self._terminate(pod_id)
+                    pod_id = await self._deploy_from_template_with_retry(deadline)
+                    stuck_init_since = None
+                    last_error = "Redeployed after stuck initialization"
+                    continue
+            else:
+                stuck_init_since = None
 
             mapping = extract_tcp_mapping(pod, self.config.runpod_wrapper_port)
             if not mapping:
