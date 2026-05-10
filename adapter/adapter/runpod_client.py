@@ -124,8 +124,10 @@ class RunPodClient:
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 self.config.runpod_graphql_url,
-                params={"api_key": self.config.runpod_api_key},
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.config.runpod_api_key}",
+                },
                 json={"query": query, "variables": variables},
             )
 

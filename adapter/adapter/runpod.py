@@ -73,10 +73,15 @@ class RunPodManager:
 
     async def release_idle_pod(self) -> None:
         pod_id = self.load_active_pod_id()
-        if not (self.config.runpod_api_key and pod_id):
+        if not self.config.runpod_api_key:
+            logger.warning("Idle release skipped: RUNPOD_API_KEY is not set")
+            return
+        if not pod_id:
+            logger.info("Idle release skipped: no active RunPod pod id (memory or %s)", self.config.runpod_active_pod_id_path or "(no path)")
             return
 
         action = self.config.idle_action
+        logger.info("Applying idle action=%s to RunPod pod %s", action, pod_id)
         try:
             if action == "terminate":
                 await self._terminate(pod_id)

@@ -32,6 +32,8 @@ logging.basicConfig(
     level=config.log_level,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").addFilter(_QuietUvicornAccessFilter())
 logger = logging.getLogger("whisperx-adapter")
 app = FastAPI(title="Speakr RunPod WhisperX Adapter")
@@ -43,23 +45,38 @@ _active_requests = 0
 
 def _schedule_idle_release() -> None:
     global _idle_stop_task
-    if _idle_stop_task and not _idle_stop_task.done():
+    replaced = bool(_idle_stop_task and not _idle_stop_task.done())
+    if replaced:
         _idle_stop_task.cancel()
+    delay = config.runpod_idle_stop_seconds
+    logger.info(
+        "Idle release timer %s; will run after %ss quiet time (action=%s)",
+        "reset" if replaced else "started",
+        delay,
+        config.idle_action,
+    )
     _idle_stop_task = asyncio.create_task(_release_after_idle_delay())
 
 
 async def _release_after_idle_delay() -> None:
     try:
-        if config.runpod_idle_stop_seconds > 0:
-            await asyncio.sleep(config.runpod_idle_stop_seconds)
-        if _active_requests == 0:
+        delay = config.runpod_idle_stop_seconds
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if _active_requests != 0:
             logger.info(
-                "Releasing RunPod pod with action=%s (idle_stop_seconds=%s)",
-                config.idle_action,
-                config.runpod_idle_stop_seconds,
+                "Idle release skipped: %s ASR request(s) still in flight after wait",
+                _active_requests,
             )
-            await runpod.release_idle_pod()
+            return
+        logger.info(
+            "Idle threshold reached; releasing RunPod (action=%s, idle_stop_seconds=%s)",
+            config.idle_action,
+            delay,
+        )
+        await runpod.release_idle_pod()
     except asyncio.CancelledError:
+        logger.debug("Idle release timer cancelled (superseded by newer timer or shutdown)")
         return
 
 
