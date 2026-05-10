@@ -12,6 +12,7 @@ RUN python -m pip install --no-cache-dir \
     python-multipart==0.0.20
 
 COPY app.py /app/app.py
+COPY adapter /app/adapter
 
 EXPOSE 9000
 

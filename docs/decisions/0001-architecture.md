@@ -99,16 +99,21 @@ The adapter:
 
 ## Storage Decision
 
-Start with 0 GB RunPod volume disk for cheapest testing.
+Start with 0 GB RunPod network volume (`volumeInGb: 0`) for cheapest testing.
 
 This means model cache may be wiped when the Pod stops. If cold starts are too
-slow or model downloads repeat too often, add a small `/workspace` volume and
-set:
+slow or model downloads repeat too often, add a small `/workspace` network
+volume and set:
 
 ```env
 CACHE_DIR=/workspace/cache
 HF_HOME=/workspace/cache
 ```
+
+`containerDiskInGb` (the pod's local overlay disk) is separate from
+`volumeInGb` and must be set explicitly in the deploy API call — it is not
+inherited from the template. The template's `containerDiskInGb` value is a
+reference for what to pass via `RUNPOD_CONTAINER_DISK_GB`.
 
 ## Update Strategy
 
@@ -148,8 +153,26 @@ Positive:
 Tradeoffs:
 
 - one more repo and two images to maintain
-- first transcription after Pod stop includes startup/model warm-up latency
+- first transcription after Pod stop includes startup/model warm-up latency (~3-5 min on Secure cloud for large-v3)
 - without an external watchdog, failed stop calls can leave GPU running
 - upstream `latest` can introduce breaking changes unless stable deployments use
   immutable tags
+
+## RunPod API Operational Notes
+
+Discovered during live testing:
+
+**Secure cloud is required.** `cloudType: "SECURE"` must be set in the deploy
+mutation. Without it, the API searches community cloud which regularly reports
+no capacity even when the RunPod UI shows GPUs as available. Configure via
+`RUNPOD_CLOUD_TYPE=SECURE`.
+
+**GPU availability is spot-market volatile.** Even Secure cloud capacity for
+a given GPU type can be exhausted. Using `gpuTypeIdList` with multiple fallbacks
+(RTX 4090 → RTX 3090 → RTX A5000) reduces the chance of a failed deploy.
+The adapter returns 503 + `Retry-After` when no machine is available.
+
+**Cold start time is ~3-5 minutes.** Time from deploy API call to wrapper
+healthy: ~1 min for machine allocation + TCP mapping, plus model load time.
+`RUNPOD_READINESS_TIMEOUT_SECONDS=600` is a reasonable ceiling.
 

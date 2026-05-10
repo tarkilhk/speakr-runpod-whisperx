@@ -1,0 +1,38 @@
+services:
+  mock-runpod:
+    image: python:3.12-slim
+    working_dir: /repo
+    command: >
+      sh -c "python -m pip install --no-cache-dir fastapi==0.115.6 uvicorn[standard]==0.34.0 python-multipart==0.0.20
+      && uvicorn scripts.mock_runpod_graphql:app --host 0.0.0.0 --port 19001"
+    environment:
+      ADAPTER_WHISPERX_TOKEN: test-token
+      MOCK_RUNPOD_PUBLIC_IP: mock-runpod
+      MOCK_RUNPOD_PUBLIC_PORT: "19001"
+      MOCK_RUNPOD_WRAPPER_PORT: "9000"
+    ports:
+      - "19001:19001"
+    volumes:
+      - .:/repo:ro
+
+  adapter:
+    build:
+      context: ./adapter
+    environment:
+      RUNPOD_API_KEY: test-key
+      RUNPOD_GRAPHQL_URL: http://mock-runpod:19001/graphql
+      RUNPOD_TEMPLATE_ID: mock-template
+      RUNPOD_GPU_TYPE_IDS: NVIDIA GeForce RTX 4090
+      RUNPOD_GPU_COUNT: "1"
+      RUNPOD_POD_NAME: speakr-whisperx-mock
+      RUNPOD_IDLE_ACTION: terminate
+      RUNPOD_IDLE_STOP_SECONDS: "2"
+      RUNPOD_POLL_INTERVAL_SECONDS: "1"
+      RUNPOD_READINESS_TIMEOUT_SECONDS: "20"
+      ADAPTER_WHISPERX_TOKEN: test-token
+      RUNPOD_WRAPPER_PORT: "9000"
+      LOG_LEVEL: INFO
+    ports:
+      - "19000:9000"
+    depends_on:
+      - mock-runpod

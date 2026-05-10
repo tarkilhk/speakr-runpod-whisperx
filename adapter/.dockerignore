@@ -1,4 +1,6 @@
 **
 !Dockerfile
 !app.py
+!adapter/
+!adapter/**
 
