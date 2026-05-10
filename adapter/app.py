@@ -17,11 +17,22 @@ from adapter.proxy import forward_asr, spool_request_body
 from adapter.runpod import RunPodManager
 
 
+class _QuietUvicornAccessFilter(logging.Filter):
+    """Swagger UI polls /docs and /openapi.json; omit those from access logs."""
+
+    _SKIP = (' "GET /docs ', ' "GET /openapi.json ', ' "GET /redoc ')
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(fragment in msg for fragment in self._SKIP)
+
+
 config = AdapterConfig.from_env()
 logging.basicConfig(
     level=config.log_level,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
+logging.getLogger("uvicorn.access").addFilter(_QuietUvicornAccessFilter())
 logger = logging.getLogger("whisperx-adapter")
 app = FastAPI(title="Speakr RunPod WhisperX Adapter")
 runpod = RunPodManager(config)
