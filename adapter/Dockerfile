@@ -11,8 +11,9 @@ RUN python -m pip install --no-cache-dir \
     httpx==0.28.1 \
     python-multipart==0.0.20
 
-COPY app.py /app/app.py
-COPY adapter /app/adapter
+COPY adapter/app.py /app/app.py
+COPY adapter/adapter /app/adapter
+COPY speakr_common /app/speakr_common
 
 EXPOSE 9000
 

@@ -62,9 +62,9 @@ class AdapterConfig:
             adapter_whisperx_token=os.getenv("ADAPTER_WHISPERX_TOKEN", ""),
             runpod_wrapper_port=int(os.getenv("RUNPOD_WRAPPER_PORT", "9000")),
             runpod_readiness_timeout_seconds=int(os.getenv("RUNPOD_READINESS_TIMEOUT_SECONDS", "600")),
-            # Stuck warmup: max seconds with machine assigned but unchanged warmup fingerprint
-            # (see startup_progress_fingerprint); 0 disables terminate-and-redeploy on stall.
-            runpod_stuck_init_timeout_seconds=int(os.getenv("RUNPOD_STUCK_INIT_TIMEOUT_SECONDS", "120")),
+            # Template mode: max seconds with machineId, no runtime, and unchanged warmup fingerprint.
+            # GraphQL cannot distinguish image pull vs stuck; keep generous. 0 disables.
+            runpod_stuck_init_timeout_seconds=int(os.getenv("RUNPOD_STUCK_INIT_TIMEOUT_SECONDS", "300")),
             runpod_poll_interval_seconds=int(os.getenv("RUNPOD_POLL_INTERVAL_SECONDS", "5")),
             runpod_request_timeout_seconds=int(os.getenv("RUNPOD_REQUEST_TIMEOUT_SECONDS", "1800")),
             # Quiet period after last /asr completes before idle terminate/stop (see app.py).

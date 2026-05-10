@@ -7,6 +7,7 @@ name: Build RunPod image
       - main
     paths:
       - 'runpod-image/**'
+      - 'speakr_common/**'
       - '.github/workflows/build-runpod-image.yaml'
   schedule:
     - cron: '23 3 * * 1'
@@ -48,7 +49,8 @@ jobs:
       - name: Build and push RunPod image
         uses: docker/build-push-action@v6
         with:
-          context: runpod-image
+          context: .
+          file: runpod-image/Dockerfile
           pull: true
           push: true
           tags: |

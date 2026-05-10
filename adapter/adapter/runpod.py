@@ -12,8 +12,8 @@ from adapter.pod_mapping import (
     extract_tcp_mapping,
     pod_is_expected_running,
     startup_progress_fingerprint,
+    warmup_digest,
     warmup_fingerprint_kv,
-    warmup_status_kv,
 )
 from adapter.runpod_client import RunPodClient
 
@@ -21,6 +21,10 @@ logger = logging.getLogger("whisperx-adapter.runpod")
 
 
 class RunPodManager:
+    """Keeps one GPU pod warm for WhisperX: deploy/resume from template or fixed pod id, poll
+    GraphQL until public TCP mapping exists, probe wrapper /health, optionally redeploy on stuck
+    init when lifecycle fingerprint stops moving (see RUNPOD_STUCK_INIT_TIMEOUT_SECONDS).
+    """
     def __init__(self, config: AdapterConfig) -> None:
         self.config = config
         self.client = RunPodClient(config)
@@ -55,6 +59,7 @@ class RunPodManager:
             return ""
 
     async def ensure_ready(self) -> str:
+        """Return base URL for the authenticated WhisperX wrapper (may poll until timeout)."""
         if not self.configured():
             raise ConfigurationError(
                 "RunPod adapter is not configured; set RUNPOD_API_KEY, ADAPTER_WHISPERX_TOKEN, "
@@ -65,28 +70,25 @@ class RunPodManager:
         async with self._lock:
             pod_id, pod, just_deployed = await self._get_or_deploy_pod(deadline)
             mapping = extract_tcp_mapping(pod, self.config.runpod_wrapper_port)
+            skip_initial_tcp_log = False
             if mapping:
                 base_url = f"http://{mapping[0]}:{mapping[1]}"
-                logger.info(
-                    "Discovered RunPod TCP mapping url=%s pod_id=%s status=%s",
-                    base_url,
-                    pod_id,
-                    warmup_status_kv(pod, wrapper_port=self.config.runpod_wrapper_port),
-                )
+                logger.info("RunPod TCP mapping %s pod_id=%s (%s)", base_url, pod_id, warmup_digest(pod))
                 healthy, detail = await self._wrapper_healthy_detail(base_url)
                 if healthy:
-                    logger.info("RunPod wrapper is already healthy url=%s pod_id=%s", base_url, pod_id)
+                    logger.info("RunPod wrapper already healthy %s pod_id=%s", base_url, pod_id)
                     return base_url
                 logger.info(
-                    "RunPod wrapper not healthy yet pod_id=%s url=%s detail=%s; waiting without calling start",
+                    "RunPod wrapper not healthy yet pod_id=%s url=%s (%s); waiting",
                     pod_id,
                     base_url,
                     detail,
                 )
+                skip_initial_tcp_log = True  # avoid repeating TCP-ready INFO at poll loop start
             else:
                 pod_id = await self._handle_pod_without_mapping(pod_id, pod, just_deployed, deadline)
 
-            return await self._wait_until_ready(pod_id, deadline)
+            return await self._wait_until_ready(pod_id, deadline, skip_initial_tcp_log=skip_initial_tcp_log)
 
     async def release_idle_pod(self) -> None:
         pod_id = self.load_active_pod_id()
@@ -102,15 +104,7 @@ class RunPodManager:
             return
 
         action = self.config.idle_action
-        logger.info(
-            "Applying idle action=%s to RunPod pod_id=%s template_mode=%s idle_stop_seconds=%s "
-            "active_pod_path=%s",
-            action,
-            pod_id,
-            self.config.template_mode_enabled,
-            self.config.runpod_idle_stop_seconds,
-            self.config.runpod_active_pod_id_path or "(none)",
-        )
+        logger.info("Idle release: action=%s pod_id=%s", action, pod_id)
         try:
             if action == "terminate":
                 await self._terminate(pod_id)
@@ -144,6 +138,7 @@ class RunPodManager:
         return pod_id, pod, just_deployed
 
     async def _handle_pod_without_mapping(self, pod_id: str, pod: dict[str, Any], just_deployed: bool, deadline: float) -> str:
+        # Template mode can replace a dead/disabled pod; fixed-pod mode resumes the same pod id.
         if self.config.template_mode_enabled and not just_deployed and not pod_is_expected_running(pod):
             logger.info("No TCP mapping found for inactive pod %s; replacing it from template", pod_id)
             await self._terminate(pod_id)
@@ -156,7 +151,7 @@ class RunPodManager:
         await self.client.start_pod(pod_id)
         return pod_id
 
-    async def _wait_until_ready(self, pod_id: str, deadline: float) -> str:
+    async def _wait_until_ready(self, pod_id: str, deadline: float, skip_initial_tcp_log: bool = False) -> str:
         last_error = "Pod is not ready"
         stuck_init_since: float | None = None
         # Snapshot of startup_progress_fingerprint(); when RunPod mutates any tracked field
@@ -164,6 +159,9 @@ class RunPodManager:
         # stuck timer instead of terminating after a fixed delay with no runtime yet.
         progress_prev: tuple[Any, ...] | None = None
         last_pod: dict[str, Any] | None = None
+        last_slow_poll_log = -1e9  # first no-mapping wait logs immediately; then every ~30s
+        # INFO once per pod_id when mapping appears (seeded if ensure_ready already logged that URL).
+        tcp_logged_for_pod: str | None = pod_id if skip_initial_tcp_log else None
 
         while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(self.config.runpod_poll_interval_seconds)
@@ -187,19 +185,20 @@ class RunPodManager:
             # "no API movement" threshold, not "no runtime yet" wall time alone.
             if progress_prev is not None and progress_fp != progress_prev:
                 logger.info(
-                    "RunPod pod_id=%s warmup fingerprint changed; resetting stuck-init timer "
-                    "(poll_interval_seconds=%s stuck_init_timeout_seconds=%s) prev=[%s] now=[%s]",
+                    "pod_id=%s warmup still progressing; stuck-init timer reset (lifecycle fields changed)",
                     pod_id,
-                    self.config.runpod_poll_interval_seconds,
-                    self.config.runpod_stuck_init_timeout_seconds,
+                )
+                logger.debug(
+                    "pod_id=%s fingerprint prev=[%s] now=[%s]",
+                    pod_id,
                     warmup_fingerprint_kv(progress_prev),
                     warmup_fingerprint_kv(progress_fp),
                 )
                 stuck_init_since = None
             progress_prev = progress_fp
 
-            # Machine assigned but runtime not visible yet — normal during image pull / boot.
-            # Without movement in startup_progress_fingerprint(), assume the placement is stuck.
+            # Stuck-init = no runtime yet + warmup fingerprint unchanged between polls. GraphQL does
+            # not expose image pull vs deadlock; a generous timeout limits false redeploys.
             if (
                 self.config.template_mode_enabled
                 and self.config.runpod_stuck_init_timeout_seconds > 0
@@ -209,28 +208,21 @@ class RunPodManager:
                 if stuck_init_since is None:
                     stuck_init_since = now
                     logger.info(
-                        "RunPod pod_id=%s machineId=%s assigned; waiting for runtime "
-                        "(poll_interval_seconds=%s stuck_init_timeout_seconds=%s). "
-                        "Timer resets when warmup fingerprint moves. status=%s",
+                        "pod_id=%s stuck-init armed machineId=%s threshold_seconds=%s (%s)",
                         pod_id,
                         pod["machineId"],
-                        self.config.runpod_poll_interval_seconds,
                         self.config.runpod_stuck_init_timeout_seconds,
-                        warmup_status_kv(pod, wrapper_port=self.config.runpod_wrapper_port),
+                        warmup_digest(pod),
                     )
                 elif now - stuck_init_since > self.config.runpod_stuck_init_timeout_seconds:
                     elapsed = now - stuck_init_since
                     logger.warning(
-                        "pod_id=%s no warmup fingerprint change for elapsed_seconds=%.1f "
-                        "(stuck_init_timeout_seconds=%s machineId=%s template_mode=%s); "
-                        "terminating and redeploying frozen=[%s] status=%s",
+                        "pod_id=%s stuck-init exceeded elapsed_seconds=%.1f threshold=%s frozen=[%s] digest=%s",
                         pod_id,
                         elapsed,
                         self.config.runpod_stuck_init_timeout_seconds,
-                        pod["machineId"],
-                        self.config.template_mode_enabled,
                         warmup_fingerprint_kv(progress_fp),
-                        warmup_status_kv(pod, wrapper_port=self.config.runpod_wrapper_port),
+                        warmup_digest(pod),
                     )
                     await self._terminate(pod_id)
                     pod_id = await self._deploy_from_template_with_retry(deadline)
@@ -239,8 +231,7 @@ class RunPodManager:
                     last_error = "Redeployed after stuck initialization"
                     continue
             else:
-                # Either runtime exists (normal path) or stuck-init watchdog disabled / no machine:
-                # do not carry over a stale stuck-init deadline into the next state.
+                # Runtime up, watchdog disabled, or no machine assignment yet — clear armed deadline.
                 stuck_init_since = None
 
             mapping = extract_tcp_mapping(pod, self.config.runpod_wrapper_port)
@@ -248,47 +239,47 @@ class RunPodManager:
                 last_error = "RunPod has not assigned a public TCP mapping yet"
                 loop_time = asyncio.get_running_loop().time()
                 remaining = max(0.0, deadline - loop_time)
-                logger.info(
-                    "pod_id=%s still no TCP mapping for wrapper_port=%s "
-                    "(readiness_remaining_seconds=%.1f poll_interval_seconds=%s): %s",
-                    pod_id,
-                    self.config.runpod_wrapper_port,
-                    remaining,
-                    self.config.runpod_poll_interval_seconds,
-                    warmup_status_kv(pod, wrapper_port=self.config.runpod_wrapper_port),
-                )
+                if loop_time - last_slow_poll_log >= 30.0:
+                    last_slow_poll_log = loop_time
+                    logger.info(
+                        "pod_id=%s awaiting TCP port=%s remaining_s=%.0f %s",
+                        pod_id,
+                        self.config.runpod_wrapper_port,
+                        remaining,
+                        warmup_digest(pod),
+                    )
                 continue
 
             base_url = f"http://{mapping[0]}:{mapping[1]}"
-            logger.info(
-                "Polling RunPod wrapper health url=%s pod_id=%s status=%s",
-                base_url,
-                pod_id,
-                warmup_status_kv(pod, wrapper_port=self.config.runpod_wrapper_port),
-            )
+            if tcp_logged_for_pod != pod_id:
+                tcp_logged_for_pod = pod_id
+                logger.info(
+                    "pod_id=%s RunPod TCP mapping ready; polling wrapper %s (%s)",
+                    pod_id,
+                    base_url,
+                    warmup_digest(pod),
+                )
+            logger.debug("Polling wrapper health pod_id=%s url=%s", pod_id, base_url)
             healthy, detail = await self._wrapper_healthy_detail(base_url)
             if healthy:
-                logger.info("RunPod wrapper is healthy url=%s pod_id=%s", base_url, pod_id)
+                logger.info("RunPod wrapper healthy %s pod_id=%s", base_url, pod_id)
                 return base_url
             last_error = f"Wrapper is not healthy at {base_url} ({detail})"
             logger.info(
-                "RunPod wrapper not healthy yet pod_id=%s url=%s detail=%s status=%s",
+                "RunPod wrapper health check not OK yet pod_id=%s url=%s (%s); will retry",
                 pod_id,
                 base_url,
                 detail,
-                warmup_status_kv(pod, wrapper_port=self.config.runpod_wrapper_port),
             )
 
         if last_pod is not None:
             logger.warning(
-                "RunPod readiness timeout pod_id=%s last_error=%s readiness_timeout_seconds=%s "
-                "poll_interval_seconds=%s wrapper_port=%s status=%s",
+                "RunPod readiness timeout pod_id=%s last_error=%s readiness_timeout_s=%s wrapper_port=%s digest=%s",
                 pod_id,
                 last_error,
                 self.config.runpod_readiness_timeout_seconds,
-                self.config.runpod_poll_interval_seconds,
                 self.config.runpod_wrapper_port,
-                warmup_status_kv(last_pod, wrapper_port=self.config.runpod_wrapper_port),
+                warmup_digest(last_pod),
             )
         else:
             logger.warning(
@@ -329,11 +320,9 @@ class RunPodManager:
             await asyncio.sleep(self.config.runpod_poll_interval_seconds)
 
         logger.warning(
-            "RunPod deploy retries exhausted before readiness deadline last_error=%s "
-            "readiness_timeout_seconds=%s poll_interval_seconds=%s template_id=%s",
+            "RunPod deploy exhausted last_error=%s readiness_timeout_s=%s template_id=%s",
             last_error,
             self.config.runpod_readiness_timeout_seconds,
-            self.config.runpod_poll_interval_seconds,
             self.config.runpod_template_id or "(none)",
         )
         raise RunPodTimeoutError(f"Timed out while deploying RunPod pod: {last_error}")

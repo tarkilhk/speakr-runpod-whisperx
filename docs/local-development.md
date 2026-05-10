@@ -32,7 +32,7 @@ RUNPOD_TEMPLATE_ID=mock-template \
 RUNPOD_GPU_TYPE_IDS="NVIDIA GeForce RTX 4090" \
 ADAPTER_WHISPERX_TOKEN=test-token \
 RUNPOD_IDLE_STOP_SECONDS=0 \
-PYTHONPATH=adapter \
+PYTHONPATH=.:adapter \
 .venv/bin/uvicorn app:app --app-dir adapter --port 19000
 ```
 
@@ -46,8 +46,10 @@ This exercises: `podFindAndDeployOnDemand`, `pod` runtime port discovery,
 bearer-auth `/asr` forwarding, and `podTerminate`.
 
 **Test stuck-init detection** (set `MOCK_STUCK_INIT_PODS=1` on the mock so the
-first deployed pod is permanently stuck with `machineId` set but no `runtime`,
-then watch the adapter terminate and redeploy after `RUNPOD_STUCK_INIT_TIMEOUT_SECONDS`):
+first deployed pod stays initializing with `machineId` and no `runtime` long enough to arm the
+watchdog, then watch the adapter terminate and redeploy after
+`RUNPOD_STUCK_INIT_TIMEOUT_SECONDS`; shorten waits locally with e.g.
+`RUNPOD_STUCK_INIT_TIMEOUT_SECONDS=15` on the adapter):
 
 ```bash
 ADAPTER_WHISPERX_TOKEN=test-token \
@@ -60,8 +62,8 @@ MOCK_STUCK_INIT_PODS=1 \
 ## Building Images Locally
 
 ```bash
-docker build -t speakr-adapter:test adapter/
-docker build -t speakr-runpod-whisperx:test runpod-image/
+docker build -f adapter/Dockerfile -t speakr-adapter:test .
+docker build -f runpod-image/Dockerfile -t speakr-runpod-whisperx:test .
 ```
 
 The RunPod image is large — it inherits CUDA, PyTorch, and WhisperX. Allow

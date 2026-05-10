@@ -9,8 +9,19 @@ trap 'rm -f "$TMP_AUDIO"' EXIT
 printf 'mock audio bytes\n' > "$TMP_AUDIO"
 
 echo "Checking adapter health..."
-curl --fail --silent "$BASE_URL/health"
-echo
+health_body=""
+for ((attempt = 1; attempt <= 45; attempt++)); do
+  if health_body=$(curl --fail --silent --max-time 3 "$BASE_URL/health" 2>/dev/null); then
+    echo "$health_body"
+    echo
+    break
+  fi
+  if [[ "$attempt" -eq 45 ]]; then
+    echo "Adapter health check failed after ${attempt} attempts (${BASE_URL}/health)." >&2
+    exit 1
+  fi
+  sleep 1
+done
 
 echo "Posting mock ASR request..."
 curl --fail --silent \

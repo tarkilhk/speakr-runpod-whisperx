@@ -15,16 +15,8 @@ from adapter.errors import (
 )
 from adapter.proxy import forward_asr, spool_request_body
 from adapter.runpod import RunPodManager
-
-
-class _QuietUvicornAccessFilter(logging.Filter):
-    """Swagger UI polls /docs and /openapi.json; omit those from access logs."""
-
-    _SKIP = (' "GET /docs ', ' "GET /openapi.json ', ' "GET /redoc ')
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(fragment in msg for fragment in self._SKIP)
+from speakr_common.http_client_logging import configure_http_client_log_redaction
+from speakr_common.uvicorn_access import QuietUvicornAccessFilter
 
 
 config = AdapterConfig.from_env()
@@ -32,11 +24,8 @@ logging.basicConfig(
     level=config.log_level,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-# httpx logs full URLs at INFO. Keep these loggers at WARNING so outbound HTTP lines stay
-# out of normal INFO pipelines (noise + avoids leaking URLs / upstream details).
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("uvicorn.access").addFilter(_QuietUvicornAccessFilter())
+configure_http_client_log_redaction()
+logging.getLogger("uvicorn.access").addFilter(QuietUvicornAccessFilter())
 logger = logging.getLogger("whisperx-adapter")
 app = FastAPI(title="Speakr RunPod WhisperX Adapter")
 runpod = RunPodManager(config)
@@ -56,8 +45,7 @@ def _schedule_idle_release() -> None:
         _idle_stop_task.cancel()
     delay = config.runpod_idle_stop_seconds
     logger.info(
-        "Idle release timer %s; idle_stop_seconds=%s action=%s active_asr_requests_after_this_completion=%s "
-        "scheduled_pod_id=%s",
+        "Idle timer %s delay=%ss action=%s in_flight=%s pod=%s",
         "reset" if replaced else "started",
         delay,
         config.idle_action,
@@ -75,18 +63,16 @@ async def _release_after_idle_delay() -> None:
         # Another /asr may have started during the sleep; only release when truly quiet.
         if _active_requests != 0:
             logger.info(
-                "Idle release skipped: active_asr_requests=%s idle_stop_seconds=%s scheduled_pod_id=%s",
+                "Idle skipped: in_flight=%s pod=%s",
                 _active_requests,
-                delay,
                 runpod.load_active_pod_id() or "(none)",
             )
             return
         logger.info(
-            "Idle threshold reached; releasing RunPod action=%s idle_stop_seconds=%s scheduled_pod_id=%s "
-            "template_mode=%s",
+            "Idle release pod=%s action=%s delay=%ss template_mode=%s",
+            runpod.load_active_pod_id() or "(none)",
             config.idle_action,
             delay,
-            runpod.load_active_pod_id() or "(none)",
             config.template_mode_enabled,
         )
         await runpod.release_idle_pod()
@@ -107,10 +93,11 @@ async def asr(request: Request) -> Response:
     body_path = await spool_request_body(request, config.max_file_size_mb)
     _active_requests += 1
     # Work in progress: do not let a sleeping idle timer fire mid-request.
+    # Idle timer reset/start stays at INFO below; per-request cancel is DEBUG to avoid doubling noise.
     if _idle_stop_task and not _idle_stop_task.done():
         _idle_stop_task.cancel()
-        logger.info(
-            "Idle release timer cancelled: ASR request started active_asr_requests=%s pod_id=%s",
+        logger.debug(
+            "Idle timer cancelled (ASR started) in_flight=%s pod=%s",
             _active_requests,
             runpod.load_active_pod_id() or "(none)",
         )

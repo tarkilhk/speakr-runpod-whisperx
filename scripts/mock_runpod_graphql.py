@@ -7,7 +7,7 @@ Environment variables:
   MOCK_RUNPOD_PUBLIC_PORT    Public port returned in pod port mappings (default: 19001)
   MOCK_RUNPOD_WRAPPER_PORT   Private port the adapter looks for (default: 9000)
   MOCK_STUCK_INIT_PODS       First N pods will be stuck (machineId set, runtime null forever).
-                             Tests the adapter's stuck-init detection and redeploy path. (default: 0)
+                             Tests stuck-init redeploy once warmup fingerprint stops changing.
 """
 
 import os
@@ -124,15 +124,18 @@ async def asr(request: Request, authorization: str = Header(default="")) -> dict
 
 
 def _initializing_pod(pod_id: str, name: str = "mock-speakr-whisperx", template_id: str = "mock-template") -> dict[str, Any]:
-    """Machine assigned but container not yet pulling — simulates slow host initialization."""
+    """Scheduled on a machine but runtime never appears — stuck-init watchdog can fire if fingerprint is flat."""
     return {
         "id": pod_id,
         "name": name,
         "desiredStatus": "RUNNING",
         "imageName": "tarkilhk/speakr-runpod-whisperx:mock",
         "machineId": "mock-machine",
+        "machine": {"podHostId": f"{pod_id}-mock-host"},
         "templateId": template_id,
         "runtime": None,
+        "version": 0,
+        "uptimeSeconds": 0,
     }
 
 

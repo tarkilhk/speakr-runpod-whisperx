@@ -15,8 +15,9 @@ RUN mkdir -p /opt/whisperx-asr \
     && cp -a /workspace/app /opt/whisperx-asr/app
 
 WORKDIR /opt/whisperx-wrapper
-COPY wrapper.py /opt/whisperx-wrapper/wrapper.py
-COPY supervisord.conf /etc/supervisor/conf.d/whisperx-runpod.conf
+COPY runpod-image/wrapper.py /opt/whisperx-wrapper/wrapper.py
+COPY speakr_common /opt/whisperx-wrapper/speakr_common
+COPY runpod-image/supervisord.conf /etc/supervisor/conf.d/whisperx-runpod.conf
 
 EXPOSE 9000
 

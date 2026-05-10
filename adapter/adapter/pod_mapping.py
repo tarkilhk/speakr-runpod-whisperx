@@ -4,6 +4,7 @@ from adapter.errors import BadUpstreamResponseError
 
 
 def extract_tcp_mapping(pod: dict[str, Any], wrapper_port: int) -> tuple[str, int] | None:
+    # Walk nested dicts: RunPod nests port mappings under runtime and sometimes duplicates shape.
     for item in walk_dicts(pod):
         mapping = item.get("portMappings")
         if isinstance(mapping, dict):
@@ -23,9 +24,10 @@ def extract_tcp_mapping(pod: dict[str, Any], wrapper_port: int) -> tuple[str, in
 def startup_progress_fingerprint(pod: dict[str, Any]) -> tuple[Any, ...]:
     """Signals RunPod may update while a pod is still warming up (before runtime/ports exist).
 
-    RunPod GraphQL does **not** expose Docker layer/pull progress. We use coarse lifecycle
-    fields from the schema (`dockerId`, `lastStartedAt`, `machine.podHostId`, telemetry,
-    etc.). Any change resets the stuck-init countdown.
+    RunPod GraphQL does **not** expose Docker layer/pull progress. We hash coarse lifecycle
+    fields (`lastStatusChange`, `lastStartedAt`, `machine.podHostId`, telemetry, etc.): any
+    change resets the stuck-init countdown. No single field means “pull done” or “safe vs stuck”;
+    together they only detect API-visible movement between polls.
 
     See docs/runpod-graphql-api.md ("Warmup vs docker pull").
     """
@@ -38,7 +40,6 @@ def startup_progress_fingerprint(pod: dict[str, Any]) -> tuple[Any, ...]:
     # Tuple order is arbitrary but must stay stable (compared across polls).
     return (
         pod.get("desiredStatus"),
-        pod.get("dockerId"),
         pod.get("lastStatusChange"),
         pod.get("lastStartedAt"),
         pod.get("uptimeSeconds"),
@@ -49,44 +50,31 @@ def startup_progress_fingerprint(pod: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
+def _repr_trim(val: Any, max_len: int = 96) -> str:
+    r = repr(val)
+    return r if len(r) <= max_len else f"{r[: max_len - 3]}..."
+
+
 def warmup_fingerprint_kv(fp: tuple[Any, ...]) -> str:
-    """Compact key=value line for logs when fingerprint tuple appears frozen or changed."""
-    if len(fp) < 9:
+    """Fingerprint tuple as key=value (trimmed); use on WARNINGS / readiness timeout."""
+    if len(fp) < 8:
         return f"fingerprint_partial={fp!r}"
-    docker_raw = fp[1]
-    docker = "set" if docker_raw else "none"
     return (
-        f"desiredStatus={fp[0]!r} dockerId={docker} lastStatusChange={fp[2]!r} "
-        f"lastStartedAt={fp[3]!r} uptimeSeconds={fp[4]!r} version={fp[5]!r} "
-        f"telemetry.state={fp[6]!r} podHostId={fp[7]!r} has_runtime={fp[8]!r}"
+        f"desiredStatus={fp[0]!r} lastStatusChange={_repr_trim(fp[1])} "
+        f"lastStartedAt={fp[2]!r} uptimeSeconds={fp[3]!r} version={fp[4]!r} "
+        f"telemetry.state={fp[5]!r} podHostId={fp[6]!r} has_runtime={fp[7]!r}"
     )
 
 
-def warmup_status_kv(pod: dict[str, Any], *, wrapper_port: int | None = None) -> str:
-    """Single-line lifecycle snapshot for INFO logs (no secrets)."""
+def warmup_digest(pod: dict[str, Any]) -> str:
+    """Short lifecycle summary for routine INFO logs (fields used by fingerprint + stuck-init)."""
     telemetry = pod.get("latestTelemetry")
     tel_state = telemetry.get("state") if isinstance(telemetry, dict) else None
-    tel_time = telemetry.get("time") if isinstance(telemetry, dict) else None
-    machine = pod.get("machine")
-    pod_host_id = machine.get("podHostId") if isinstance(machine, dict) else None
-    docker = "set" if pod.get("dockerId") else "none"
-    parts = [
-        f"desiredStatus={pod.get('desiredStatus')!r}",
-        f"machineId={pod.get('machineId')!r}",
-        f"dockerId={docker}",
-        f"lastStatusChange={pod.get('lastStatusChange')!r}",
-        f"lastStartedAt={pod.get('lastStartedAt')!r}",
-        f"uptimeSeconds={pod.get('uptimeSeconds')!r}",
-        f"version={pod.get('version')!r}",
-        f"telemetry.state={tel_state!r}",
-        f"telemetry.time={tel_time!r}",
-        f"podHostId={pod_host_id!r}",
-        f"has_runtime={pod.get('runtime') is not None}",
-        f"imageName={pod.get('imageName')!r}",
-    ]
-    if wrapper_port is not None:
-        parts.append(f"wrapper_port={wrapper_port}")
-    return " ".join(parts)
+    return (
+        f"machineId={pod.get('machineId')!r} runtime={pod.get('runtime') is not None} "
+        f"tel.state={tel_state!r} uptimeSeconds={pod.get('uptimeSeconds')!r} "
+        f"version={pod.get('version')!r}"
+    )
 
 
 def pod_is_expected_running(pod: dict[str, Any]) -> bool:

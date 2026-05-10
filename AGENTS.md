@@ -17,6 +17,8 @@ RunPod Secure Pod for WhisperX transcription:
 - `adapter/`: local Speakr-side adapter that accepts Speakr's `/asr` requests,
   starts/stops the RunPod Pod, discovers the current TCP mapping, and forwards
   requests to the authenticated wrapper.
+- `speakr_common/`: tiny shared Python helpers used by the adapter and RunPod
+  wrapper images (e.g. logging hygiene).
 
 The repo must stay generic and open-sourceable. Do not add homelab-specific
 hostnames, private URLs, inventory paths, tokens, secrets, or deployment
@@ -57,7 +59,8 @@ deployments.
 Run before finalizing code changes:
 
 ```bash
-python3 -m py_compile adapter/app.py runpod-image/wrapper.py
+python3 -m py_compile adapter/app.py runpod-image/wrapper.py \
+  speakr_common/http_client_logging.py speakr_common/uvicorn_access.py
 docker compose -f docker-compose.mock.yml up -d --build
 bash scripts/smoke_mock_adapter.sh
 docker compose -f docker-compose.mock.yml down

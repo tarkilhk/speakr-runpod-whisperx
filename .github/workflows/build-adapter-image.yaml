@@ -7,6 +7,7 @@ name: Build adapter image
       - main
     paths:
       - 'adapter/**'
+      - 'speakr_common/**'
       - '.github/workflows/build-adapter-image.yaml'
   workflow_dispatch:
 
@@ -46,7 +47,8 @@ jobs:
       - name: Build and push adapter image
         uses: docker/build-push-action@v6
         with:
-          context: adapter
+          context: .
+          file: adapter/Dockerfile
           pull: true
           push: true
           tags: |

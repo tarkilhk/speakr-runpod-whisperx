@@ -9,30 +9,24 @@ from adapter.pod_mapping import extract_created_pod_id
 
 logger = logging.getLogger("whisperx-adapter.runpod_client")
 
-# Pod poll: lifecycle + warmup hints beyond runtime/ports. RunPod does not expose docker pull
-# progress in GraphQL; extra fields feed startup_progress_fingerprint() so we do not treat
-# long pulls as "stuck" while desiredStatus/dockerId/telemetry/etc. are still moving.
-# See docs/runpod-graphql-api.md ("Warmup vs docker pull").
+# Pod poll query: minimal GraphQL selection for TCP/public-port discovery, stuck-init (machineId
+# vs runtime + fingerprint), and startup_progress_fingerprint(). RunPod does not expose Docker
+# pull progress; coarse field twitching resets stuck-init — see docs/runpod-graphql-api.md.
 POD_FIELDS = """
 id
-name
 desiredStatus
-dockerId
 lastStatusChange
 lastStartedAt
 version
 uptimeSeconds
-imageName
 machineId
 machine {
   podHostId
 }
 latestTelemetry {
   state
-  time
 }
 runtime {
-  uptimeInSeconds
   ports {
     ip
     isIpPublic
@@ -125,15 +119,11 @@ class RunPodClient:
             body["networkVolumeId"] = self.config.runpod_network_volume_id
 
         logger.info(
-            "Deploying RunPod from template_id=%s gpu_type_ids=%s gpu_count=%s cloud_type=%s "
-            "support_public_ip=%s container_disk_gb=%s network_volume_id=%s pod_name=%s",
+            "Deploying RunPod template_id=%s cloud_type=%s gpu_count=%s disk_gb=%s name=%s",
             self.config.runpod_template_id,
-            ",".join(self.config.runpod_gpu_type_ids),
-            self.config.runpod_gpu_count,
             self.config.runpod_cloud_type,
-            self.config.runpod_support_public_ip,
+            self.config.runpod_gpu_count,
             self.config.runpod_container_disk_gb or "(omit)",
-            self.config.runpod_network_volume_id or "(none)",
             self.config.runpod_pod_name,
         )
         payload = await self._graphql(DEPLOY_POD_MUTATION, {"input": body}, "podFindAndDeployOnDemand")

@@ -39,7 +39,6 @@ observable lifecycle ([manage pods](https://docs.runpod.io/sdks/graphql/manage-p
 Practical signals that the workload is **past pure scheduling** (often still **before**
 **`runtime`** is populated) include:
 
-- **`dockerId`** — Docker container id once the engine has created the container record.
 - **`lastStartedAt`** — timestamp RunPod associates with the container start lifecycle.
 - Top-level **`uptimeSeconds`** — deprecated in docs in favour of **`runtime.uptimeInSeconds`**,
   but may appear earlier than a full **`runtime`** block in some responses.
@@ -48,30 +47,30 @@ Practical signals that the workload is **past pure scheduling** (often still **b
 
 The adapter treats **`runtime`** (especially **public TCP ports**) as **fully ready** for
 the WhisperX wrapper. Until then, it combines the fields above into a **warmup fingerprint**;
-any change resets the stuck-init redeploy timer (see adapter code).
+any change resets the stuck-init redeploy timer (see adapter code). Stuck-init arms once
+**`machineId`** is set and **`runtime`** is still missing (see `RUNPOD_STUCK_INIT_TIMEOUT_SECONDS`
+in `docs/setup.md`).
+
+The **`pod` poll query in code** requests a minimal field set (same lifecycle signals; omits `name`,
+`imageName`, telemetry `time`, and `runtime.uptimeInSeconds`) to keep payloads small.
 
 ```graphql
 query Pod($input: PodFilter) {
   pod(input: $input) {
     id
-    name
     desiredStatus
-    dockerId
     lastStatusChange
     lastStartedAt
     version
     uptimeSeconds
-    imageName
     machineId
     machine {
       podHostId
     }
     latestTelemetry {
       state
-      time
     }
     runtime {
-      uptimeInSeconds
       ports {
         ip
         isIpPublic
