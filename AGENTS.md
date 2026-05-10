@@ -65,10 +65,8 @@ docker compose -f docker-compose.mock.yml down
 
 The smoke test exercises the full adapter lifecycle against the mock: deploy,
 TCP mapping discovery, bearer-auth `/asr` forwarding, and terminate. Run it
-once when a feature or fix is complete — not after every small change.
-
-CI runs the smoke test automatically on every push that touches `adapter/`,
-`scripts/`, or `docker-compose.mock.yml`, and blocks the image build if it fails.
+once when a feature or fix is complete — not after every small change. CI does
+not run the smoke test; it is a manual pre-commit gate.
 
 If Docker image builds are too large for the local machine, at minimum run the
 Python compile check and rely on CI for image builds.

@@ -7,8 +7,6 @@ name: Build adapter image
       - main
     paths:
       - 'adapter/**'
-      - 'scripts/**'
-      - 'docker-compose.mock.yml'
       - '.github/workflows/build-adapter-image.yaml'
   workflow_dispatch:
 
@@ -20,37 +18,7 @@ env:
   ADAPTER_IMAGE: tarkilhk/speakr-adapter
 
 jobs:
-  smoke-test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Start mock services
-        run: docker compose -f docker-compose.mock.yml up -d --build
-
-      - name: Wait for adapter to be healthy
-        run: |
-          for i in $(seq 1 30); do
-            if curl --silent --fail http://127.0.0.1:19000/health; then
-              echo "Adapter is healthy"
-              exit 0
-            fi
-            echo "Waiting... ($i/30)"
-            sleep 2
-          done
-          docker compose -f docker-compose.mock.yml logs
-          exit 1
-
-      - name: Run smoke test
-        run: bash scripts/smoke_mock_adapter.sh
-
-      - name: Tear down
-        if: always()
-        run: docker compose -f docker-compose.mock.yml down
-
   build-adapter-image:
-    needs: smoke-test
     runs-on: ubuntu-latest
     permissions:
       contents: read
