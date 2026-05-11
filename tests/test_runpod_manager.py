@@ -124,15 +124,16 @@ class RunPodManagerTests(unittest.IsolatedAsyncioTestCase):
         client.deploy_from_template.assert_awaited_once()
 
     async def test_release_idle_pod_terminates_and_clears_template_pod(self) -> None:
-        manager, client = self.make_manager(adapter_drain_pod_logs_on_idle=False)
+        manager, client = self.make_manager()
         manager._active_pod_store.store("idle-pod")
 
-        await manager.release_idle_pod()
+        with patch("adapter.runpod.drain_cloud_pod_logs", AsyncMock()):
+            await manager.release_idle_pod()
 
         client.terminate_pod.assert_awaited_once_with("idle-pod")
         self.assertEqual(manager.load_active_pod_id(), "")
 
-    async def test_release_idle_pod_drains_logs_when_enabled(self) -> None:
+    async def test_release_idle_pod_drains_logs_before_terminate(self) -> None:
         manager, client = self.make_manager()
         manager._active_pod_store.store("idle-pod")
 
@@ -146,7 +147,6 @@ class RunPodManagerTests(unittest.IsolatedAsyncioTestCase):
         manager, client = self.make_manager(
             runpod_pod_id="fixed-pod",
             runpod_template_id="",
-            adapter_drain_pod_logs_on_idle=False,
         )
 
         await manager.release_idle_pod()
@@ -154,11 +154,10 @@ class RunPodManagerTests(unittest.IsolatedAsyncioTestCase):
         client.stop_pod.assert_awaited_once_with("fixed-pod")
         self.assertEqual(manager.load_active_pod_id(), "fixed-pod")
 
-    async def test_release_idle_pod_does_not_auto_drain_logs_when_stopping_fixed_pod(self) -> None:
+    async def test_release_idle_pod_does_not_drain_on_stop(self) -> None:
         manager, client = self.make_manager(
             runpod_pod_id="fixed-pod",
             runpod_template_id="",
-            adapter_drain_pod_logs_on_idle=True,
         )
 
         with patch("adapter.runpod.drain_cloud_pod_logs", AsyncMock()) as drain:

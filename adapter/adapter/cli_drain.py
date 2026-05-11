@@ -2,10 +2,6 @@
 
 Run as:  python -m adapter.cli_drain
 Or via docker:  docker run --rm --env-file .env <image> python -m adapter.cli_drain
-
-The drain always runs regardless of ADAPTER_DRAIN_POD_LOGS_ON_IDLE (that flag only gates the
-automatic idle-release hook in the adapter process). Lines are always emitted on
-``whisperx-adapter.runpod_pod_capture``.
 """
 
 from __future__ import annotations

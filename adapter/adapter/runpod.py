@@ -43,7 +43,6 @@ class RunPodManager:
             "template_mode_enabled": self.config.template_mode_enabled,
             "active_pod_id_configured": bool(self.load_active_pod_id()),
             "idle_action": self.config.idle_action,
-            "pod_log_drain_enabled": self.config.adapter_drain_pod_logs_on_idle,
         }
 
     def load_active_pod_id(self) -> str:
@@ -97,13 +96,11 @@ class RunPodManager:
         action = self.config.idle_action
         logger.info("Idle release: action=%s pod_id=%s", action, pod_id)
         try:
-            if self.config.adapter_drain_pod_logs_on_idle and action == "terminate":
+            if action == "terminate":
                 try:
                     await drain_cloud_pod_logs(self.config, pod_id, self.client)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("Pod log drain raised unexpectedly pod_id=%s: %s", pod_id, exc)
-            elif self.config.adapter_drain_pod_logs_on_idle:
-                logger.info("Pod log drain skipped for non-terminal idle action action=%s pod_id=%s", action, pod_id)
 
             if action == "terminate":
                 await self._terminate(pod_id)
