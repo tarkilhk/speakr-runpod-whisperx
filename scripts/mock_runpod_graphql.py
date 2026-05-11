@@ -98,6 +98,14 @@ async def health() -> dict[str, Any]:
     return {"status": "healthy", "upstream": {"status": "mock"}}
 
 
+@app.get("/internal/pod-logs")
+async def internal_pod_logs(authorization: str = Header(default="")) -> dict[str, Any]:
+    expected = f"Bearer {ADAPTER_WHISPERX_TOKEN}"
+    if authorization != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"files": [{"name": "whisperx-stdout.log", "content": "mock whisperx log line\n"}]}
+
+
 @app.post("/asr")
 async def asr(request: Request, authorization: str = Header(default="")) -> dict[str, Any]:
     expected = f"Bearer {ADAPTER_WHISPERX_TOKEN}"

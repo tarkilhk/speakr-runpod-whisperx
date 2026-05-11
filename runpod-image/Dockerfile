@@ -12,10 +12,13 @@ RUN apt-get update \
         uvicorn[standard]==0.34.0
 
 RUN mkdir -p /opt/whisperx-asr \
-    && cp -a /workspace/app /opt/whisperx-asr/app
+    && cp -a /workspace/app /opt/whisperx-asr/app \
+    && mkdir -p /var/log/whisperx-pod \
+    && chown 1000:1000 /var/log/whisperx-pod
 
 WORKDIR /opt/whisperx-wrapper
 COPY runpod-image/wrapper.py /opt/whisperx-wrapper/wrapper.py
+COPY runpod-image/tee_process.py /opt/whisperx-wrapper/tee_process.py
 COPY speakr_common /opt/whisperx-wrapper/speakr_common
 COPY runpod-image/supervisord.conf /etc/supervisor/conf.d/whisperx-runpod.conf
 

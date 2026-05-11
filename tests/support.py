@@ -25,6 +25,8 @@ def make_config(**overrides):
         "runpod_retry_after_seconds": 300,
         "max_file_size_mb": 0,
         "log_level": "INFO",
+        "adapter_drain_pod_logs_on_idle": True,
+        "adapter_pod_log_fetch_timeout_seconds": 120.0,
     }
     values.update(overrides)
     return AdapterConfig(**values)

@@ -124,7 +124,7 @@ class RunPodManagerTests(unittest.IsolatedAsyncioTestCase):
         client.deploy_from_template.assert_awaited_once()
 
     async def test_release_idle_pod_terminates_and_clears_template_pod(self) -> None:
-        manager, client = self.make_manager()
+        manager, client = self.make_manager(adapter_drain_pod_logs_on_idle=False)
         manager._active_pod_store.store("idle-pod")
 
         await manager.release_idle_pod()
@@ -132,13 +132,40 @@ class RunPodManagerTests(unittest.IsolatedAsyncioTestCase):
         client.terminate_pod.assert_awaited_once_with("idle-pod")
         self.assertEqual(manager.load_active_pod_id(), "")
 
+    async def test_release_idle_pod_drains_logs_when_enabled(self) -> None:
+        manager, client = self.make_manager()
+        manager._active_pod_store.store("idle-pod")
+
+        with patch("adapter.runpod.drain_cloud_pod_logs", AsyncMock()) as drain:
+            await manager.release_idle_pod()
+
+        drain.assert_awaited_once_with(manager.config, "idle-pod", client)
+        client.terminate_pod.assert_awaited_once_with("idle-pod")
+
     async def test_release_idle_pod_stops_fixed_pod_by_default(self) -> None:
-        manager, client = self.make_manager(runpod_pod_id="fixed-pod", runpod_template_id="")
+        manager, client = self.make_manager(
+            runpod_pod_id="fixed-pod",
+            runpod_template_id="",
+            adapter_drain_pod_logs_on_idle=False,
+        )
 
         await manager.release_idle_pod()
 
         client.stop_pod.assert_awaited_once_with("fixed-pod")
         self.assertEqual(manager.load_active_pod_id(), "fixed-pod")
+
+    async def test_release_idle_pod_does_not_auto_drain_logs_when_stopping_fixed_pod(self) -> None:
+        manager, client = self.make_manager(
+            runpod_pod_id="fixed-pod",
+            runpod_template_id="",
+            adapter_drain_pod_logs_on_idle=True,
+        )
+
+        with patch("adapter.runpod.drain_cloud_pod_logs", AsyncMock()) as drain:
+            await manager.release_idle_pod()
+
+        drain.assert_not_awaited()
+        client.stop_pod.assert_awaited_once_with("fixed-pod")
 
     # --- configured() ---
 

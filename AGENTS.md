@@ -59,7 +59,8 @@ deployments.
 Run before finalizing code changes:
 
 ```bash
-python3 -m py_compile adapter/app.py runpod-image/wrapper.py \
+python3 -m py_compile adapter/app.py adapter/adapter/pod_logs.py adapter/adapter/cli_drain.py \
+  runpod-image/tee_process.py runpod-image/wrapper.py \
   speakr_common/http_client_logging.py speakr_common/uvicorn_access.py
 docker compose -f docker-compose.mock.yml up -d --build
 bash scripts/smoke_mock_adapter.sh

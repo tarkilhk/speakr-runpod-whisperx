@@ -35,6 +35,8 @@ class AdapterConfig:
     runpod_retry_after_seconds: int
     max_file_size_mb: int
     log_level: str
+    adapter_drain_pod_logs_on_idle: bool
+    adapter_pod_log_fetch_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> "AdapterConfig":
@@ -72,6 +74,10 @@ class AdapterConfig:
             runpod_retry_after_seconds=int(os.getenv("RUNPOD_RETRY_AFTER_SECONDS", "300")),
             max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "0")),
             log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+            adapter_drain_pod_logs_on_idle=_env_bool("ADAPTER_DRAIN_POD_LOGS_ON_IDLE", "true"),
+            adapter_pod_log_fetch_timeout_seconds=float(
+                os.getenv("ADAPTER_POD_LOG_FETCH_TIMEOUT_SECONDS", "120"),
+            ),
         )
 
     @property
