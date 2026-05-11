@@ -36,7 +36,7 @@ class PodLogsHelpersTests(unittest.TestCase):
         self.assertEqual(_lines_from_bundle({"files": "nope"}), [])
 
     def test_emit_capture_truncates_long_utf8_line(self) -> None:
-        with self.assertLogs("whisperx-adapter.runpod_pod_capture", level="INFO") as cm:
+        with self.assertLogs("whisperx-adapter.runpod_logs", level="INFO") as cm:
             _emit_capture_lines("pid", [("whisperx-stdout.log", "x" * 400)], max_line_bytes=50)
         self.assertEqual(len(cm.records), 1)
         msg = cm.records[0].getMessage()
@@ -44,7 +44,7 @@ class PodLogsHelpersTests(unittest.TestCase):
         self.assertIn("log_file=whisperx-stdout.log", msg)
 
     def test_emit_capture_structured_format(self) -> None:
-        with self.assertLogs("whisperx-adapter.runpod_pod_capture", level="INFO") as cm:
+        with self.assertLogs("whisperx-adapter.runpod_logs", level="INFO") as cm:
             _emit_capture_lines("mypod", [("whisperx-stderr.log", "oops")])
         msg = cm.records[0].getMessage()
         self.assertIn("pod_id=mypod", msg)
@@ -59,7 +59,7 @@ class PodLogsDrainTests(unittest.IsolatedAsyncioTestCase):
         client.get_pod = AsyncMock(return_value=_pod_with_mapping("p1"))
         with patch("adapter.pod_logs._fetch_bundle", new_callable=AsyncMock) as fetch:
             fetch.return_value = {"files": [{"name": "whisperx-stdout.log", "content": "hello\n"}]}
-            with self.assertLogs("whisperx-adapter.runpod_pod_capture", level="INFO") as cm:
+            with self.assertLogs("whisperx-adapter.runpod_logs", level="INFO") as cm:
                 await drain_cloud_pod_logs(cfg, "p1", client)
         messages = [r.getMessage() for r in cm.records]
         self.assertTrue(

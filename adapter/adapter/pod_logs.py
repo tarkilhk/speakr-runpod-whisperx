@@ -13,7 +13,7 @@ from adapter.runpod_client import RunPodClient
 
 logger = logging.getLogger("whisperx-adapter.pod_logs")
 # Collect container logs for this logger (e.g. Grafana Alloy) and route as you like.
-capture_logger = logging.getLogger("whisperx-adapter.runpod_pod_capture")
+capture_logger = logging.getLogger("whisperx-adapter.runpod_logs")
 
 WRAPPER_POD_LOGS_PATH = "/internal/pod-logs"
 # Cap UTF-8 bytes per line when emitting (avoids oversized single records in log pipelines).
