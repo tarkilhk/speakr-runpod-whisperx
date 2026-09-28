@@ -1,12 +1,15 @@
 import hmac
 import logging
 import os
+import re
+import time
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from speakr_common.http_client_logging import configure_http_client_log_redaction
 from speakr_common.proxy_headers import forwarded_request_headers, forwarded_response_headers
@@ -33,7 +36,82 @@ configure_http_client_log_redaction()
 logging.getLogger("uvicorn.access").addFilter(QuietUvicornAccessFilter())
 _wr_logger = logging.getLogger("whisperx-wrapper")
 
+
+def _trace_id(scope: Scope) -> str:
+    for name, value in scope.get("headers", []):
+        if name.lower() == b"x-asr-trace-id":
+            candidate = value.decode("ascii", errors="ignore")
+            return candidate if re.fullmatch(r"[0-9a-f]{12}", candidate) else "untracked"
+    return "untracked"
+
+
+class AsrResponseTraceMiddleware:
+    """Measure ASGI handoff, not delivery to the client over TCP."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("path") != "/asr" or scope.get("method") != "POST":
+            await self.app(scope, receive, send)
+            return
+
+        trace_id = _trace_id(scope)
+        started = time.monotonic()
+        status: int | None = None
+        attempted_bytes = 0
+        handed_off_bytes = 0
+
+        async def traced_send(message: Message) -> None:
+            nonlocal status, attempted_bytes, handed_off_bytes
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                content_length = next(
+                    (value.decode("ascii", errors="replace") for name, value in message.get("headers", [])
+                     if name.lower() == b"content-length"),
+                    None,
+                )
+                _wr_logger.info(
+                    "ASR response headers handoff started id=%s status=%s content_length=%s elapsed_s=%.3f",
+                    trace_id, status, content_length, time.monotonic() - started,
+                )
+            elif message["type"] == "http.response.body":
+                chunk_bytes = len(message.get("body", b""))
+                attempted_bytes += chunk_bytes
+                _wr_logger.info(
+                    "ASR response body handoff started id=%s status=%s chunk_bytes=%d "
+                    "attempted_bytes=%d elapsed_s=%.3f",
+                    trace_id, status, chunk_bytes, attempted_bytes, time.monotonic() - started,
+                )
+            await send(message)
+            if message["type"] == "http.response.start":
+                _wr_logger.info(
+                    "ASR response headers handoff returned id=%s status=%s elapsed_s=%.3f",
+                    trace_id, status, time.monotonic() - started,
+                )
+            elif message["type"] == "http.response.body":
+                handed_off_bytes += chunk_bytes
+                _wr_logger.info(
+                    "ASR response body handoff returned id=%s status=%s handed_off_bytes=%d "
+                    "final=%s elapsed_s=%.3f",
+                    trace_id, status, handed_off_bytes, not message.get("more_body", False),
+                    time.monotonic() - started,
+                )
+
+        try:
+            await self.app(scope, receive, traced_send)
+        except BaseException as exc:
+            _wr_logger.warning(
+                "ASR response handoff failed id=%s status=%s attempted_bytes=%d "
+                "handed_off_bytes=%d elapsed_s=%.3f error=%s",
+                trace_id, status, attempted_bytes, handed_off_bytes,
+                time.monotonic() - started, type(exc).__name__,
+            )
+            raise
+
+
 app = FastAPI(title="RunPod WhisperX Auth Wrapper")
+app.add_middleware(AsrResponseTraceMiddleware)
 
 
 def _authorized(request: Request) -> bool:
@@ -115,6 +193,7 @@ async def proxy(path: str, request: Request) -> Response:
         pool=60,
     )
 
+    started = time.monotonic()
     async with httpx.AsyncClient(timeout=timeout) as client:
         upstream = await client.request(
             request.method,
@@ -122,6 +201,13 @@ async def proxy(path: str, request: Request) -> Response:
             params=request.query_params,
             headers=headers,
             content=request.stream(),
+        )
+
+    if path == "asr":
+        _wr_logger.info(
+            "ASR upstream buffered id=%s status=%s body_bytes=%d elapsed_s=%.3f",
+            _trace_id(request.scope), upstream.status_code, len(upstream.content),
+            time.monotonic() - started,
         )
 
     return Response(

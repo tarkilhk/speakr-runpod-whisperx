@@ -3,6 +3,7 @@ import logging
 import tempfile
 import time
 from collections.abc import AsyncIterator
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from speakr_common.proxy_headers import forwarded_request_headers
 
 
 logger = logging.getLogger("whisperx-adapter.proxy")
+BODY_WAIT_LOG_INTERVAL_SECONDS = 30
 
 
 async def spool_request_body(request: Request, max_file_size_mb: int) -> Path:
@@ -41,7 +43,13 @@ async def spool_request_body(request: Request, max_file_size_mb: int) -> Path:
 
 
 async def forward_asr(base_url: str, request: Request, body_path: Path, config: AdapterConfig) -> Response:
-    headers = forwarded_request_headers(request.headers, authorization_token=config.adapter_whisperx_token)
+    request_id = uuid4().hex[:12]
+    headers = forwarded_request_headers(
+        request.headers,
+        authorization_token=config.adapter_whisperx_token,
+        extra_excluded=("x-asr-trace-id",),
+    )
+    headers["X-ASR-Trace-ID"] = request_id
     timeout = httpx.Timeout(
         config.runpod_request_timeout_seconds,
         connect=60,
@@ -49,11 +57,12 @@ async def forward_asr(base_url: str, request: Request, body_path: Path, config: 
         write=config.runpod_request_timeout_seconds,
         pool=60,
     )
-    request_id = uuid4().hex[:12]
     started = time.monotonic()
     phase = "response_headers"
     status: int | None = None
     decoded_bytes = 0
+    last_progress_bytes = 0
+    last_progress_at = started
     logger.info("ASR upstream request started id=%s read_timeout_s=%s", request_id, timeout.read)
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
@@ -74,9 +83,40 @@ async def forward_asr(base_url: str, request: Request, body_path: Path, config: 
                     time.monotonic() - started,
                 )
                 body = bytearray()
-                async for chunk in upstream.aiter_bytes():
-                    body.extend(chunk)
-                    decoded_bytes += len(chunk)
+                last_chunk_at = time.monotonic()
+
+                async def log_waiting() -> None:
+                    while True:
+                        await asyncio.sleep(BODY_WAIT_LOG_INTERVAL_SECONDS)
+                        now = time.monotonic()
+                        logger.info(
+                            "ASR upstream body waiting id=%s status=%s decoded_body_bytes=%d "
+                            "since_last_chunk_s=%.1f elapsed_s=%.3f",
+                            request_id, status, decoded_bytes, now - last_chunk_at, now - started,
+                        )
+
+                heartbeat = asyncio.create_task(log_waiting())
+                try:
+                    async for chunk in upstream.aiter_bytes():
+                        body.extend(chunk)
+                        decoded_bytes += len(chunk)
+                        now = time.monotonic()
+                        last_chunk_at = now
+                        if decoded_bytes and (
+                            last_progress_bytes == 0
+                            or decoded_bytes - last_progress_bytes >= 64 * 1024
+                            or now - last_progress_at >= 15
+                        ):
+                            logger.info(
+                                "ASR upstream body progress id=%s status=%s decoded_body_bytes=%d elapsed_s=%.3f",
+                                request_id, status, decoded_bytes, now - started,
+                            )
+                            last_progress_bytes = decoded_bytes
+                            last_progress_at = now
+                finally:
+                    heartbeat.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await heartbeat
                 logger.info(
                     "ASR upstream body complete id=%s status=%s decoded_body_bytes=%d elapsed_s=%.3f",
                     request_id, status, decoded_bytes, time.monotonic() - started,
