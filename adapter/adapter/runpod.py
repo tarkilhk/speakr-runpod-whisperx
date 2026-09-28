@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 
 from adapter.config import AdapterConfig
-from adapter.errors import ConfigurationError, RunPodNotFoundError, RunPodTimeoutError
+from adapter.errors import ConfigurationError, RunPodNotFoundError, RunPodTimeoutError, TemporaryRunPodError
 from adapter.pod_mapping import (
     extract_tcp_mapping,
     pod_is_expected_running,
@@ -68,6 +68,8 @@ class RunPodManager:
                 if healthy:
                     logger.info("RunPod wrapper already healthy %s pod_id=%s", base_url, pod_id)
                     return base_url
+                if detail == "protocol_incompatible":
+                    raise TemporaryRunPodError("RunPod pod has an old wrapper image; replace it with the matching template image")
                 logger.info(
                     "RunPod wrapper not healthy yet pod_id=%s url=%s (%s); waiting",
                     pod_id,
@@ -260,6 +262,8 @@ class RunPodManager:
             if healthy:
                 logger.info("RunPod wrapper healthy %s pod_id=%s", base_url, pod_id)
                 return base_url
+            if detail == "protocol_incompatible":
+                raise TemporaryRunPodError("RunPod pod has an old wrapper image; replace it with the matching template image")
             last_error = f"Wrapper is not healthy at {base_url} ({detail})"
             logger.info(
                 "RunPod wrapper health check not OK yet pod_id=%s url=%s (%s); will retry",

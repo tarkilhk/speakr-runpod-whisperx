@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 from tests.support import make_config
 
-from adapter.errors import ConfigurationError, RunPodNotFoundError, RunPodTimeoutError
+from adapter.errors import ConfigurationError, RunPodNotFoundError, RunPodTimeoutError, TemporaryRunPodError
 from adapter.runpod import RunPodManager
 
 
@@ -65,6 +65,14 @@ class RunPodManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(base_url, "http://127.0.0.1:19000")
         client.deploy_from_template.assert_not_awaited()
         client.start_pod.assert_not_awaited()
+
+    async def test_ensure_ready_rejects_old_active_wrapper_before_transcription(self) -> None:
+        manager, client = self.make_manager(runpod_pod_id="fixed-pod", runpod_template_id="")
+        client.get_pod.return_value = running_pod("fixed-pod")
+        with patch("adapter.runpod.wrapper_healthy_detail", AsyncMock(return_value=(False, "protocol_incompatible"))):
+            with self.assertRaisesRegex(TemporaryRunPodError, "old wrapper image"):
+                await manager.ensure_ready()
+        client.deploy_from_template.assert_not_awaited()
 
     async def test_ensure_ready_deploys_from_template_when_no_active_pod_exists(self) -> None:
         manager, client = self.make_manager()

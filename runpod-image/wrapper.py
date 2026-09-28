@@ -1,3 +1,5 @@
+import asyncio
+import hashlib
 import hmac
 import logging
 import os
@@ -5,12 +7,16 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from speakr_common.asr_result_protocol import (
+    CHUNK_SIZE, MAX_RESULT_BYTES, PROTOCOL_HEADER, PROTOCOL_VERSION,
+)
 from speakr_common.http_client_logging import configure_http_client_log_redaction
 from speakr_common.proxy_headers import forwarded_request_headers, forwarded_response_headers
 from speakr_common.uvicorn_access import QuietUvicornAccessFilter
@@ -35,6 +41,43 @@ if not logging.root.handlers:
 configure_http_client_log_redaction()
 logging.getLogger("uvicorn.access").addFilter(QuietUvicornAccessFilter())
 _wr_logger = logging.getLogger("whisperx-wrapper")
+RESULT_TTL_SECONDS = 3600
+MAX_CACHED_RESULTS = 8
+MAX_CACHED_BYTES = 32 * 1024 * 1024
+# One Uvicorn worker owns this bounded, ephemeral store. A restart invalidates handles.
+_results: dict[str, tuple[float, bytes, str]] = {}
+_results_lock = asyncio.Lock()
+
+
+def _expire_results(now: float) -> None:
+    for result_id, (expires, _, _) in list(_results.items()):
+        if expires <= now:
+            del _results[result_id]
+
+
+async def _store_result(body: bytes, trace_id: str) -> dict[str, Any]:
+    if not body or len(body) > MAX_RESULT_BYTES:
+        raise HTTPException(status_code=503, detail="ASR result exceeds bounded transfer store")
+    async with _results_lock:
+        _expire_results(time.monotonic())
+        if len(_results) >= MAX_CACHED_RESULTS or sum(len(item[1]) for item in _results.values()) + len(body) > MAX_CACHED_BYTES:
+            raise HTTPException(status_code=503, detail="ASR transfer store is full")
+        result_id = uuid4().hex
+        digest = hashlib.sha256(body).hexdigest()
+        _results[result_id] = (time.monotonic() + RESULT_TTL_SECONDS, body, digest)
+    _wr_logger.info("ASR result stored id=%s result_id=%s body_bytes=%d", trace_id, result_id, len(body))
+    return {"id": result_id, "length": len(body), "sha256": digest}
+
+
+async def _get_result(result_id: str) -> tuple[float, bytes, str]:
+    if re.fullmatch(r"[0-9a-f]{32}", result_id) is None:
+        raise HTTPException(status_code=404, detail="ASR result not found")
+    async with _results_lock:
+        _expire_results(time.monotonic())
+        item = _results.get(result_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="ASR result not found")
+    return item
 
 
 def _trace_id(scope: Scope) -> str:
@@ -164,8 +207,34 @@ async def internal_pod_logs(request: Request) -> dict[str, Any]:
     return {"files": files_out}
 
 
+@app.get("/internal/asr-results/{result_id}")
+async def result_chunk(
+    result_id: str, request: Request,
+    offset: int = Query(ge=0), limit: int = Query(ge=1, le=CHUNK_SIZE),
+) -> Response:
+    if not _authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _, body, _ = await _get_result(result_id)
+    if offset >= len(body):
+        raise HTTPException(status_code=416, detail="ASR chunk offset out of bounds")
+    chunk = body[offset:offset + limit]
+    _wr_logger.info("ASR result chunk id=%s offset=%d bytes=%d", _trace_id(request.scope), offset, len(chunk))
+    return Response(content=chunk, media_type="application/octet-stream", headers={"X-ASR-Chunk-Offset": str(offset)})
+
+
+@app.delete("/internal/asr-results/{result_id}", status_code=204)
+async def delete_result(result_id: str, request: Request) -> Response:
+    if not _authorized(request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if re.fullmatch(r"[0-9a-f]{32}", result_id) is None:
+        raise HTTPException(status_code=404, detail="ASR result not found")
+    async with _results_lock:
+        _results.pop(result_id, None)
+    return Response(status_code=204)
+
+
 @app.get("/health")
-async def health() -> dict:
+async def health() -> JSONResponse:
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             upstream = await client.get(f"{UPSTREAM}/health")
@@ -173,7 +242,7 @@ async def health() -> dict:
     except Exception as exc:
         raise HTTPException(status_code=503, detail="WhisperX not ready") from exc
 
-    return {"status": "healthy"}
+    return JSONResponse({"status": "healthy"}, headers={PROTOCOL_HEADER: PROTOCOL_VERSION})
 
 
 @app.api_route(
@@ -184,7 +253,7 @@ async def proxy(path: str, request: Request) -> Response:
     if not _authorized(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    headers = forwarded_request_headers(request.headers)
+    headers = forwarded_request_headers(request.headers, extra_excluded=(PROTOCOL_HEADER,))
     timeout = httpx.Timeout(
         REQUEST_TIMEOUT_SECONDS,
         connect=60,
@@ -209,6 +278,11 @@ async def proxy(path: str, request: Request) -> Response:
             _trace_id(request.scope), upstream.status_code, len(upstream.content),
             time.monotonic() - started,
         )
+        if request.headers.get(PROTOCOL_HEADER) == PROTOCOL_VERSION and upstream.status_code == 200:
+            if "application/json" not in upstream.headers.get("content-type", ""):
+                raise HTTPException(status_code=502, detail="WhisperX returned non-JSON response")
+            manifest = await _store_result(upstream.content, _trace_id(request.scope))
+            return JSONResponse(content=manifest, status_code=202, headers={PROTOCOL_HEADER: PROTOCOL_VERSION})
 
     return Response(
         content=upstream.content,

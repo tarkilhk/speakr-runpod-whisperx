@@ -1,5 +1,6 @@
 """Response-boundary diagnostics in the RunPod wrapper (no pod or audio)."""
 
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 from starlette.requests import Request
+from speakr_common.asr_result_protocol import CHUNK_SIZE, PROTOCOL_HEADER, PROTOCOL_VERSION
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "runpod-image"))
 
@@ -101,6 +103,60 @@ class WrapperResponseTraceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"ASR upstream buffered id=abc123def456 status=200 body_bytes={len(upstream.content)}", logs)
         self.assertNotIn("private transcript", logs)
         self.assertNotIn("test-token", logs)
+
+    async def test_authenticated_bounded_chunks_reassemble_and_delete_result(self):
+        body = b'{"text":"' + b"x" * (477323 - 11) + b'"}'
+        fake_client = AsyncMock()
+        fake_client.__aenter__.return_value = fake_client
+        fake_client.request.return_value = httpx.Response(200, content=body, headers={"content-type": "application/json"})
+        wrapper._results.clear()
+        transport = httpx.ASGITransport(app=wrapper.app)
+        auth = {"Authorization": "Bearer test-token", "X-ASR-Trace-ID": "abc123def456"}
+        async with httpx.AsyncClient(transport=transport, base_url="http://local-wrapper") as client:
+            with patch.object(wrapper, "ADAPTER_WHISPERX_TOKEN", "test-token"):
+                with patch.object(wrapper.httpx, "AsyncClient", return_value=fake_client):
+                    with self.assertLogs("whisperx-wrapper", level="INFO") as captured:
+                        response = await client.post("/asr", content=b"synthetic audio", headers={**auth, PROTOCOL_HEADER: PROTOCOL_VERSION})
+                self.assertEqual(response.status_code, 202)
+                self.assertEqual(response.headers[PROTOCOL_HEADER], PROTOCOL_VERSION)
+                info = response.json()
+                self.assertEqual(info["length"], len(body))
+                self.assertEqual(info["sha256"], hashlib.sha256(body).hexdigest())
+                url = f'/internal/asr-results/{info["id"]}'
+                unauthorized = await client.get(url, params={"offset": 0, "limit": CHUNK_SIZE})
+                self.assertEqual(unauthorized.status_code, 401)
+                assembled = bytearray()
+                for offset in range(0, len(body), CHUNK_SIZE):
+                    part = await client.get(url, params={"offset": offset, "limit": CHUNK_SIZE}, headers=auth)
+                    self.assertEqual(part.status_code, 200)
+                    self.assertEqual(part.headers["x-asr-chunk-offset"], str(offset))
+                    self.assertLessEqual(len(part.content), CHUNK_SIZE)
+                    assembled.extend(part.content)
+                self.assertEqual(bytes(assembled), body)
+                out_of_range = await client.get(url, params={"offset": len(body), "limit": 1}, headers=auth)
+                self.assertEqual(out_of_range.status_code, 416)
+                self.assertEqual((await client.delete(url, headers=auth)).status_code, 204)
+                self.assertEqual((await client.get(url, params={"offset": 0, "limit": 1}, headers=auth)).status_code, 404)
+        logs = "\n".join(captured.output)
+        self.assertIn(f"body_bytes={len(body)}", logs)
+        self.assertNotIn("synthetic audio", logs)
+        self.assertNotIn("Bearer test-token", logs)
+        self.assertNotIn('"text"', logs)
+        wrapper._results.clear()
+
+    async def test_result_store_is_bounded_and_expiring(self):
+        wrapper._results.clear()
+        too_large = b"x" * (wrapper.MAX_RESULT_BYTES + 1)
+        with self.assertRaises(Exception) as raised:
+            await wrapper._store_result(too_large, "abc123def456")
+        self.assertEqual(raised.exception.status_code, 503)
+        with self.assertLogs("whisperx-wrapper", level="INFO"):
+            info = await wrapper._store_result(b"safe", "abc123def456")
+        with patch.object(wrapper.time, "monotonic", return_value=float("inf")):
+            with self.assertRaises(Exception) as missing:
+                await wrapper._get_result(info["id"])
+        self.assertEqual(missing.exception.status_code, 404)
+        wrapper._results.clear()
 
     async def test_actual_wrapper_app_correlates_large_buffer_and_asgi_handoff(self):
         body = b'{"text":"' + b"x" * (477323 - 11) + b'"}'
