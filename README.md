@@ -25,6 +25,20 @@ Speakr
 Both are published as `latest` and immutable `sha-<git-sha>` tags. Use `sha-*`
 for stable deployments.
 
+For large ASR responses the adapter requests a short result manifest, then retrieves
+8 KiB authenticated chunks from the Pod wrapper with bounded retries and a final
+SHA-256 check. This avoids relying on one long response-body transfer across the
+Pod's public TCP mapping; it does **not** prove or repair an underlying network fault.
+The Pod cache is limited to eight results / 32 MiB. Result handles expire after
+one hour (purged on the next access), and retrieval attempts delete their handle.
+Deploy the **new RunPod template image first**, then the matching adapter image.
+An existing Pod keeps its old image even after the template changes; the new
+adapter checks the wrapper's health capability before transcription and rejects
+an incompatible Pod rather than paying for a doomed GPU run. Allow the normal
+idle cleanup to replace it or explicitly coordinate replacement. Do not switch
+either image until both SHA tags are published and an explicitly authorized live
+test can verify the complete transfer.
+
 ## Quick Start
 
 **1. Create a RunPod template** using `tarkilhk/speakr-runpod-whisperx:latest`,

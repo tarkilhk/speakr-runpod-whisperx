@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 from adapter.wrapper_health import wrapper_healthy_detail
+from speakr_common.asr_result_protocol import PROTOCOL_HEADER, PROTOCOL_VERSION
 
 
 class FakeAsyncClient:
@@ -20,9 +21,14 @@ class FakeAsyncClient:
 
 
 class WrapperHealthTests(unittest.IsolatedAsyncioTestCase):
-    async def test_status_200_is_healthy(self) -> None:
-        with patch("adapter.wrapper_health.httpx.AsyncClient", return_value=FakeAsyncClient(httpx.Response(200))):
+    async def test_status_200_with_protocol_is_healthy(self) -> None:
+        response = httpx.Response(200, headers={PROTOCOL_HEADER: PROTOCOL_VERSION})
+        with patch("adapter.wrapper_health.httpx.AsyncClient", return_value=FakeAsyncClient(response)):
             self.assertEqual(await wrapper_healthy_detail("http://pod"), (True, "status=200"))
+
+    async def test_old_healthy_wrapper_is_incompatible(self) -> None:
+        with patch("adapter.wrapper_health.httpx.AsyncClient", return_value=FakeAsyncClient(httpx.Response(200))):
+            self.assertEqual(await wrapper_healthy_detail("http://pod"), (False, "protocol_incompatible"))
 
     async def test_non_200_is_unhealthy_with_status_detail(self) -> None:
         with patch("adapter.wrapper_health.httpx.AsyncClient", return_value=FakeAsyncClient(httpx.Response(503))):

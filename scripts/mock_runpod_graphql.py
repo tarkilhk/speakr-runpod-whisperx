@@ -10,12 +10,14 @@ Environment variables:
                              Tests stuck-init redeploy once warmup fingerprint stops changing.
 """
 
+import hashlib
 import os
 import uuid
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from speakr_common.asr_result_protocol import CHUNK_SIZE, PROTOCOL_HEADER, PROTOCOL_VERSION
 
 PUBLIC_IP = os.getenv("MOCK_RUNPOD_PUBLIC_IP", "127.0.0.1")
 PUBLIC_PORT = int(os.getenv("MOCK_RUNPOD_PUBLIC_PORT", "19001"))
@@ -29,6 +31,7 @@ app = FastAPI(title="Mock RunPod GraphQL + WhisperX")
 pods: dict[str, dict[str, Any]] = {}
 # How many stuck pods have been deployed so far
 _stuck_pods_deployed = 0
+results: dict[str, bytes] = {}
 
 
 @app.post("/graphql")
@@ -94,7 +97,8 @@ async def graphql(request: Request) -> JSONResponse:
 
 
 @app.get("/health")
-async def health() -> dict[str, Any]:
+async def health(response: Response) -> dict[str, Any]:
+    response.headers[PROTOCOL_HEADER] = PROTOCOL_VERSION
     return {"status": "healthy", "upstream": {"status": "mock"}}
 
 
@@ -107,7 +111,7 @@ async def internal_pod_logs(authorization: str = Header(default="")) -> dict[str
 
 
 @app.post("/asr")
-async def asr(request: Request, authorization: str = Header(default="")) -> dict[str, Any]:
+async def asr(request: Request, authorization: str = Header(default="")) -> Response:
     expected = f"Bearer {ADAPTER_WHISPERX_TOKEN}"
     if authorization != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -116,7 +120,7 @@ async def asr(request: Request, authorization: str = Header(default="")) -> dict
     async for _chunk in request.stream():
         pass
 
-    return {
+    payload = {
         "text": [
             {
                 "start": 0.0,
@@ -129,6 +133,35 @@ async def asr(request: Request, authorization: str = Header(default="")) -> dict
         "segments": [{"start": 0.0, "end": 1.0, "text": " mock transcription", "speaker": "SPEAKER_00"}],
         "word_segments": [],
     }
+    if request.headers.get(PROTOCOL_HEADER) != PROTOCOL_VERSION:
+        return JSONResponse(payload)
+    body = JSONResponse(payload).body
+    result_id = uuid.uuid4().hex
+    results[result_id] = body
+    return JSONResponse(
+        {"id": result_id, "length": len(body), "sha256": hashlib.sha256(body).hexdigest()},
+        status_code=202, headers={PROTOCOL_HEADER: PROTOCOL_VERSION},
+    )
+
+
+@app.get("/internal/asr-results/{result_id}")
+async def result_chunk(result_id: str, offset: int, limit: int, authorization: str = Header(default="")) -> Response:
+    if authorization != f"Bearer {ADAPTER_WHISPERX_TOKEN}":
+        raise HTTPException(status_code=401)
+    body = results.get(result_id)
+    if body is None:
+        raise HTTPException(status_code=404)
+    if offset < 0 or offset >= len(body) or limit < 1 or limit > CHUNK_SIZE:
+        raise HTTPException(status_code=416)
+    return Response(body[offset:offset + limit], headers={"X-ASR-Chunk-Offset": str(offset)})
+
+
+@app.delete("/internal/asr-results/{result_id}")
+async def delete_result(result_id: str, authorization: str = Header(default="")) -> Response:
+    if authorization != f"Bearer {ADAPTER_WHISPERX_TOKEN}":
+        raise HTTPException(status_code=401)
+    results.pop(result_id, None)
+    return Response(status_code=204)
 
 
 def _initializing_pod(pod_id: str, name: str = "mock-speakr-whisperx", template_id: str = "mock-template") -> dict[str, Any]:

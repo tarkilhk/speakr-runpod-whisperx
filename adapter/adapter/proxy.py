@@ -13,6 +13,8 @@ from fastapi.responses import Response
 
 from adapter.config import AdapterConfig
 from adapter.errors import BadUpstreamResponseError, TemporaryRunPodError
+from adapter.result_transfer import fetch_result, read_manifest
+from speakr_common.asr_result_protocol import PROTOCOL_HEADER, PROTOCOL_VERSION
 from speakr_common.proxy_headers import forwarded_request_headers
 
 
@@ -47,9 +49,10 @@ async def forward_asr(base_url: str, request: Request, body_path: Path, config: 
     headers = forwarded_request_headers(
         request.headers,
         authorization_token=config.adapter_whisperx_token,
-        extra_excluded=("x-asr-trace-id",),
+        extra_excluded=("x-asr-trace-id", PROTOCOL_HEADER),
     )
     headers["X-ASR-Trace-ID"] = request_id
+    headers[PROTOCOL_HEADER] = PROTOCOL_VERSION
     timeout = httpx.Timeout(
         config.runpod_request_timeout_seconds,
         connect=60,
@@ -64,7 +67,8 @@ async def forward_asr(base_url: str, request: Request, body_path: Path, config: 
     last_progress_bytes = 0
     last_progress_at = started
     logger.info("ASR upstream request started id=%s read_timeout_s=%s", request_id, timeout.read)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    # A fresh TCP connection per chunk prevents a stalled large-response socket from being reused.
+    async with httpx.AsyncClient(timeout=timeout, limits=httpx.Limits(max_keepalive_connections=0)) as client:
         try:
             async with client.stream(
                 "POST",
@@ -82,6 +86,23 @@ async def forward_asr(base_url: str, request: Request, body_path: Path, config: 
                     upstream.headers.get("transfer-encoding"), upstream.headers.get("content-encoding"),
                     time.monotonic() - started,
                 )
+                if status in (200, 202):
+                    if status != 202 or upstream.headers.get(PROTOCOL_HEADER) != PROTOCOL_VERSION:
+                        raise TemporaryRunPodError("RunPod wrapper does not support bounded ASR result retrieval")
+                    phase = "result_manifest"
+                    manifest = await read_manifest(upstream)
+                    phase = "result_chunks"
+                    body = await fetch_result(
+                        client, base_url, headers, manifest, request_id,
+                        deadline=started + config.runpod_request_timeout_seconds,
+                    )
+                    decoded_bytes = len(body)
+                    logger.info(
+                        "ASR upstream body complete id=%s status=200 decoded_body_bytes=%d elapsed_s=%.3f",
+                        request_id, decoded_bytes, time.monotonic() - started,
+                    )
+                    return Response(content=body, status_code=200, media_type="application/json")
+
                 body = bytearray()
                 last_chunk_at = time.monotonic()
 
